@@ -119,6 +119,11 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 	wantsHTML := isBrowserUA(userAgent) || strings.Contains(accept, "text/html")
 	wantsStream := strings.Contains(accept, "text/event-stream")
 
+	// Easter egg
+	if isPoopBaby(query, w) {
+		return
+	}
+
 	if query != "" {
 		prompt = query
 		if history != "" {
