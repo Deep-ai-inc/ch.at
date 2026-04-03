@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
@@ -92,6 +93,11 @@ func handleConnection(netConn net.Conn, config *ssh.ServerConfig) {
 func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 	defer channel.Close()
 
+	// Session-scoped context — cancelled when session ends, which
+	// ensures any in-flight LLM goroutines are cleaned up.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Handle session requests
 	go func() {
 		for req := range requests {
@@ -138,7 +144,7 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 					// Get LLM response with streaming
 					ch := make(chan string)
 					go func() {
-						if _, err := LLM(query, ch); err != nil {
+						if _, err := LLM(ctx, query, ch); err != nil {
 							fmt.Fprintf(channel, "Error: %s\r\n", err.Error())
 						}
 					}()

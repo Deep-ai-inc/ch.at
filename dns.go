@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -44,16 +45,16 @@ func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 		// Optimize prompt for DNS constraints
 		dnsPrompt := "Answer in 500 characters or less, no markdown formatting: " + prompt
 
-		// Stream LLM response with hard deadline
+		// Stream LLM response with hard deadline — context cancellation
+		// ensures the LLM goroutine is cleaned up when the deadline expires.
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		ch := make(chan string)
-		done := make(chan bool)
 
 		go func() {
-			LLM(dnsPrompt, ch)
+			LLM(ctx, dnsPrompt, ch)
 		}()
 
 		var response strings.Builder
-		deadline := time.After(4 * time.Second) // Safe middle ground for DNS clients
 		channelClosed := false
 
 		for {
@@ -67,7 +68,7 @@ func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 				if response.Len() >= 500 {
 					goto respond
 				}
-			case <-deadline:
+			case <-ctx.Done():
 				if response.Len() == 0 {
 					response.WriteString("Request timed out")
 				} else if !channelClosed {
@@ -78,7 +79,7 @@ func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 
 	respond:
-		close(done)
+		cancel()
 		finalResponse := response.String()
 		if len(finalResponse) > 500 {
 			finalResponse = finalResponse[:497] + "..."

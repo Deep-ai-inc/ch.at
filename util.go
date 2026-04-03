@@ -11,10 +11,16 @@ import (
 const maxEntries = 10000 // Rotate when current map reaches this size (~2.5MB)
 
 var (
-	current      = &sync.Map{}
-	previous     = &sync.Map{}
+	current      atomic.Pointer[sync.Map]
+	previous     atomic.Pointer[sync.Map]
 	currentCount int64
+	rotateMu     sync.Mutex
 )
+
+func init() {
+	current.Store(&sync.Map{})
+	previous.Store(&sync.Map{})
+}
 
 func rateLimitAllow(addr string) bool {
 	ip := addr
@@ -26,24 +32,32 @@ func rateLimitAllow(addr string) bool {
 		rotate()
 	}
 
-	if val, ok := current.Load(ip); ok {
+	cur := current.Load()
+	if val, ok := cur.Load(ip); ok {
 		return val.(*rate.Limiter).Allow()
 	}
 
-	if val, ok := previous.Load(ip); ok {
-		current.Store(ip, val)
+	prev := previous.Load()
+	if val, ok := prev.Load(ip); ok {
+		cur.Store(ip, val)
 		atomic.AddInt64(&currentCount, 1)
 		return val.(*rate.Limiter).Allow()
 	}
 
 	limiter := rate.NewLimiter(100.0/60, 10)
-	current.Store(ip, limiter)
+	cur.Store(ip, limiter)
 	atomic.AddInt64(&currentCount, 1)
 	return limiter.Allow()
 }
 
 func rotate() {
-	previous = current
-	current = &sync.Map{}
+	rotateMu.Lock()
+	defer rotateMu.Unlock()
+	// Double-check under lock
+	if atomic.LoadInt64(&currentCount) < maxEntries {
+		return
+	}
+	previous.Store(current.Load())
+	current.Store(&sync.Map{})
 	atomic.StoreInt64(&currentCount, 0)
 }

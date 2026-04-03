@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -61,16 +62,36 @@ const htmlFooterTemplate = `</div>
 </html>`
 
 func StartHTTPServer(port int) error {
-	http.HandleFunc("/", handleRoot)
-	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleRoot)
+	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 
-	addr := fmt.Sprintf(":%d", port)
-	return http.ListenAndServe(addr, nil)
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 60 * time.Second, // LLM streaming can take a while
+		IdleTimeout:  60 * time.Second,
+	}
+	return server.ListenAndServe()
 }
 
 func StartHTTPSServer(port int, certFile, keyFile string) error {
-	addr := fmt.Sprintf(":%d", port)
-	return http.ListenAndServeTLS(addr, certFile, keyFile, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleRoot)
+	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
+
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  60 * time.Second,
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+	return server.ListenAndServeTLS(certFile, keyFile)
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +188,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			ch := make(chan string, 10)
 			go func() {
 				htmlPrompt := htmlPromptPrefix + prompt
-				LLM(htmlPrompt, ch)
+				LLM(r.Context(), htmlPrompt, ch)
 			}()
 
 			var response strings.Builder
@@ -198,7 +219,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 			ch := make(chan string, 10)
 			go func() {
-				LLM(prompt, ch)
+				LLM(r.Context(), prompt, ch)
 			}()
 
 			for chunk := range ch {
@@ -215,7 +236,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		if wantsHTML {
 			promptToUse = htmlPromptPrefix + prompt
 		}
-		response, err := LLM(promptToUse, nil)
+		response, err := LLM(r.Context(), promptToUse, nil)
 		if err != nil {
 			content = err.Error()
 			errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -262,7 +283,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 		ch := make(chan string, 10)
 		go func() {
-			LLM(prompt, ch)
+			LLM(r.Context(), prompt, ch)
 		}()
 
 		for chunk := range ch {
@@ -371,7 +392,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ch := make(chan string, 10)
-		go LLM(messages, ch)
+		go LLM(r.Context(), messages, ch)
 
 		for chunk := range ch {
 			resp := map[string]interface{}{
@@ -397,7 +418,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 
 	} else {
-		response, err := LLM(messages, nil)
+		response, err := LLM(r.Context(), messages, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
