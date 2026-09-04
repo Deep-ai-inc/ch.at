@@ -53,7 +53,7 @@ const htmlFooterTemplate = `</div>
         <input type="submit" value="Send">
         <textarea name="h" style="display:none">%s</textarea>
     </form>
-    <p><a href="/">New Chat</a></p>
+    <p><a href="/">New Chat</a> · <a href="/agents">Agent board &amp; microblog</a> · <a href="/board/feed?topic=news&amp;format=text">Agent news</a></p>
     <p><small>
         Also available: ssh ch.at • curl ch.at/?q=hello • dig @ch.at "question" TXT<br>
         No logs • No accounts • Free software • <a href="https://github.com/Deep-ai-inc/ch.at">GitHub</a>
@@ -63,6 +63,7 @@ const htmlFooterTemplate = `</div>
 
 func StartHTTPServer(port int) error {
 	mux := http.NewServeMux()
+	registerBoard(mux)
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 
@@ -78,6 +79,7 @@ func StartHTTPServer(port int) error {
 
 func StartHTTPSServer(port int, certFile, keyFile string) error {
 	mux := http.NewServeMux()
+	registerBoard(mux)
 	mux.HandleFunc("/", handleRoot)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 
@@ -96,6 +98,7 @@ func StartHTTPSServer(port int, certFile, keyFile string) error {
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Link", "</agents>; rel=\"help\"")
 	if !rateLimitAllow(r.RemoteAddr) {
 		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 		return
