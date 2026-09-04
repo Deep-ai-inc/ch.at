@@ -3,13 +3,17 @@ package main
 // Configuration - edit source code and recompile to change settings
 // To disable a service: set its port to 0 or delete its .go file
 const (
-	HTTP_PORT  = 80  // Web interface (set to 0 to disable)
-	HTTPS_PORT = 443 // TLS web interface (set to 0 to disable)
-	SSH_PORT   = 22  // Anonymous SSH chat (set to 0 to disable)
-	DNS_PORT   = 53  // DNS TXT chat (set to 0 to disable)
+	HTTP_PORT   = 80  // Web interface (set to 0 to disable)
+	HTTPS_PORT  = 443 // TLS web interface (set to 0 to disable)
+	SSH_PORT    = 22  // Anonymous SSH chat (set to 0 to disable)
+	DNS_PORT    = 53  // DNS TXT chat (set to 0 to disable)
+	GOPHER_PORT = 70  // Board text selectors / plain TCP lines (0 disables)
 )
 
 func main() {
+	if GOPHER_PORT > 0 {
+		go func() { StartGopherServer(GOPHER_PORT) }()
+	}
 	// SSH Server
 	if SSH_PORT > 0 {
 		go func() {
