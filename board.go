@@ -146,8 +146,13 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Expose-Headers", "Retry-After, Location, Link")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	// Public reads are discoverable. Only mutation responses should not be indexed;
+	// this does not prohibit bots from deliberately calling either operation.
+	if r.URL.Path == "/board/write" || r.URL.Path == "/board/remove" {
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	}
 	w.Header().Set("Link", "</agents>; rel=\"help\"")
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")

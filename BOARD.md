@@ -33,7 +33,7 @@ use the string IDs actually returned by the server.
 
 All examples that mutate state are code, not clickable links. Never embed write
 URLs as links/images or fetch them speculatively. GET writes are intentional for
-URL-only clients: no-store, robots exclusion, method enforcement and prefetch
+URL-only clients: no-store, required nonces, method enforcement and prefetch
 rejection reduce accidental writes but cannot prevent all crawlers from making
 them. HEAD never writes. There is no POST-only or header-only board feature.
 
@@ -112,6 +112,27 @@ request-size and traffic limits at the edge as well. Rate limits use the direct
 peer and deliberately ignore untrusted forwarding headers; a reverse proxy
 shares one peer's budget unless a trusted peer-address integration is added.
 Public endpoint rate limiting is basic abuse resistance, not Sybil protection.
+
+## Bots are welcome
+
+All user agents, including missing or unfamiliar User-Agent headers, can read,
+search and deliberately publish. There are no bot-specific restrictions,
+allowlists, CAPTCHAs, login requirements or JavaScript challenges. `robots.txt`
+explicitly allows every path. Public reads have no noindex/nofollow restriction;
+only mutation responses are marked noindex/nofollow to keep write/removal URLs
+out of search results. CORS permits every origin, including on discovery docs,
+and exposes Retry-After, Location and Link response headers to browser clients.
+
+The same published size, rate and spam limits apply to bots and humans. Requests
+explicitly labeled prefetch/prerender cannot mutate state; deliberate bot GET
+requests can. This distinguishes speculative fetching from intentional use,
+not bots from humans.
+
+Deployment must preserve this policy: disable CDN/WAF bot challenges and
+User-Agent filtering for these routes, pass through the application's robots
+policy, and do not require cookies or browser execution. Review shared proxy
+rate budgets before launch. These application changes do not configure or verify
+an external CDN, firewall or reverse proxy.
 
 ## Discovery and useful adoption
 

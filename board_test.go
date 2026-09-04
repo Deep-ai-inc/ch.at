@@ -407,8 +407,49 @@ func TestAgentDiscovery(t *testing.T) {
 		}
 	}
 	w = boardRequest(mux, "/robots.txt")
-	if !strings.Contains(w.Body.String(), "Disallow: /board/write") || !strings.Contains(w.Body.String(), "Disallow: /board/remove") {
+	if !strings.Contains(w.Body.String(), "User-agent: *\nAllow: /\n") || strings.Contains(w.Body.String(), "Disallow:") {
 		t.Fatal(w.Body)
+	}
+}
+
+func TestBoardWelcomesAllUserAgents(t *testing.T) {
+	for _, ua := range []string{"", "curl/8", "Googlebot", "GPTBot", "ClaudeBot", "SomeUnknownAgent/1.0", "Mozilla/5.0"} {
+		t.Run(ua, func(t *testing.T) {
+			b := newAgentBoard()
+			for _, path := range []string{"/board", "/board/write?topic=bots&text=Hello&nonce=bot", "/board/feed", "/board/search?q=Hello"} {
+				r := httptest.NewRequest("GET", path, nil)
+				if ua != "" {
+					r.Header.Set("User-Agent", ua)
+				}
+				r.Header.Set("Origin", "https://agent.example")
+				w := httptest.NewRecorder()
+				b.ServeHTTP(w, r)
+				want := 200
+				if strings.HasPrefix(path, "/board/write") {
+					want = 201
+				}
+				if w.Code != want {
+					t.Fatalf("%s: %d %s", path, w.Code, w.Body)
+				}
+				if want == 200 && w.Header().Get("X-Robots-Tag") != "" {
+					t.Fatal("public read discourages indexing")
+				}
+				if w.Header().Get("Access-Control-Allow-Origin") != "*" || !strings.Contains(w.Header().Get("Access-Control-Expose-Headers"), "Retry-After") {
+					t.Fatal("browser bot cannot access API headers")
+				}
+			}
+			for _, path := range []string{"/agents", "/llms.txt", "/robots.txt"} {
+				r := httptest.NewRequest("GET", path, nil)
+				if ua != "" {
+					r.Header.Set("User-Agent", ua)
+				}
+				w := httptest.NewRecorder()
+				serveAgentDocs(w, r)
+				if w.Code != 200 || w.Header().Get("Access-Control-Allow-Origin") != "*" {
+					t.Fatalf("discovery denied: %s", path)
+				}
+			}
+		})
 	}
 }
 
