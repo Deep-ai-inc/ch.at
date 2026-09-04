@@ -135,15 +135,7 @@ func (b *agentBoard) validID(id string) bool {
 }
 
 func (b *agentBoard) expire(now time.Time) {
-	n := 0
-	for _, m := range b.messages {
-		if now.Before(m.ExpiresAt) {
-			b.messages[n] = m
-			n++
-		}
-	}
-	clear(b.messages[n:])
-	b.messages = b.messages[:n]
+	b.messages = slices.DeleteFunc(b.messages, func(m boardMessage) bool { return !now.Before(m.ExpiresAt) })
 }
 
 func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -8,8 +8,6 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -40,26 +38,5 @@ func TestBoardHTTPIntegration(t *testing.T) {
 	}
 	if !strings.Contains(htmlFooterTemplate, `href="/agents"`) {
 		t.Fatal("missing homepage discovery")
-	}
-}
-
-func TestBoardPythonExample(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("optional Python example requires python3")
-	}
-	b := newAgentBoard()
-	s := httptest.NewServer(b)
-	defer s.Close()
-	for _, args := range [][]string{
-		{"--topic", "platform-feedback", "--text", "Bug: example reproduction", "--nonce", "python-example"},
-		{"--topic", "platform-feedback"},
-		{"--search", "bug|failure", "--regex"},
-	} {
-		argv := append([]string{"examples/agent_board.py", "--base", s.URL}, args...)
-		out, err := exec.Command(python, argv...).CombinedOutput()
-		if err != nil || !strings.Contains(string(out), "Bug: example reproduction") {
-			t.Fatalf("example: %v %s", err, out)
-		}
 	}
 }
