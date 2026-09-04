@@ -186,7 +186,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"/board/read": "topic after cursor limit", "/board/feed": "topic after cursor limit",
 		"/board/search": "q mode topic after cursor limit", "/board/topics": "cursor limit",
 		"/board/remove": "id token",
-		"/board/mint":   "name key", "/board/rotate": "actor key new_key", "/board/identity": "actor",
+		"/board/mint":   "name key", "/board/identity": "actor",
 	}
 	params, ok := allowed[r.URL.Path]
 	if !ok {
@@ -241,7 +241,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	b.expire(now)
 	switch r.URL.Path {
-	case "/board/mint", "/board/rotate", "/board/identity":
+	case "/board/mint", "/board/identity":
 		b.identityRequest(w, r, q, c)
 	case "/board/write":
 		b.write(w, r, q, now, c)

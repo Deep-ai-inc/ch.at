@@ -18,7 +18,7 @@ type boardIdentity struct {
 }
 
 func boardMutation(path string) bool {
-	return path == "/board/write" || path == "/board/remove" || path == "/board/mint" || path == "/board/rotate"
+	return path == "/board/write" || path == "/board/remove" || path == "/board/mint"
 }
 
 func boardKeyHash(key string) string {
@@ -45,7 +45,7 @@ func (b *agentBoard) authenticate(actor, key string) (boardIdentity, bool) {
 func identityCapability(i boardIdentity, key string) map[string]any {
 	params := url.Values{"actor": {i.ID}, "key": {key}}.Encode()
 	return map[string]any{"actor_id": i.ID, "name": i.Name, "verified_same_actor": true,
-		"write_url": "/board/write?" + params, "rotate_url": "/board/rotate?" + params,
+		"write_url":    "/board/write?" + params,
 		"identity_url": "/board/identity?actor=" + i.ID,
 		"warning":      "Keep capability URLs secret. Verification means key-holder continuity only, not real-world identity or truth. Save this response; the server stores only the key hash."}
 }
@@ -58,45 +58,6 @@ func (b *agentBoard) identityRequest(w http.ResponseWriter, r *http.Request, q u
 			return
 		}
 		boardRespond(w, r, 200, map[string]any{"actor_id": i.ID, "name": i.Name, "verification": "key-holder continuity only"})
-		return
-	}
-	if r.URL.Path == "/board/rotate" {
-		key := q.Get("new_key")
-		if key != "" && key == q.Get("key") {
-			boardError(w, r, 400, "unchanged_key", "Replacement key must differ from the old key.")
-			return
-		}
-		// Supplying the replacement key makes an uncertain rotation safely retryable.
-		if i, ok := b.authenticate(q.Get("actor"), key); ok {
-			boardRespond(w, r, 200, identityCapability(i, key))
-			return
-		}
-		i, ok := b.authenticate(q.Get("actor"), q.Get("key"))
-		if !ok {
-			boardError(w, r, 403, "invalid_capability", "Invalid actor capability.")
-			return
-		}
-		if c.writes >= 10 || b.writes >= 120 {
-			boardError(w, r, 429, "rate_limited", "Mutation limit reached.")
-			return
-		}
-		if key == "" {
-			var err error
-			key, err = randomBoardKey()
-			if err != nil {
-				boardError(w, r, 503, "entropy_unavailable", "Could not generate a capability.")
-				return
-			}
-		}
-		if !validBoardKey(key) {
-			boardError(w, r, 400, "invalid_key", "new_key must be 64 lowercase hexadecimal characters from 32 random bytes.")
-			return
-		}
-		i.KeyHash = boardKeyHash(key)
-		b.identities[i.ID] = i
-		c.writes++
-		b.writes++
-		boardRespond(w, r, 200, identityCapability(i, key))
 		return
 	}
 	name, key := q.Get("name"), q.Get("key")

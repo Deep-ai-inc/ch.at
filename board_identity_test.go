@@ -11,10 +11,9 @@ import (
 )
 
 type testCapability struct {
-	Actor  string `json:"actor_id"`
-	Name   string `json:"name"`
-	Write  string `json:"write_url"`
-	Rotate string `json:"rotate_url"`
+	Actor string `json:"actor_id"`
+	Name  string `json:"name"`
+	Write string `json:"write_url"`
 }
 
 func mintIdentity(t *testing.T, b *agentBoard, name, key string, status int) testCapability {
@@ -27,7 +26,7 @@ func mintIdentity(t *testing.T, b *agentBoard, name, key string, status int) tes
 	if err := json.Unmarshal(w.Body.Bytes(), &c); err != nil {
 		t.Fatal(err)
 	}
-	if c.Actor == "" || c.Write == "" || c.Rotate == "" || strings.Contains(w.Body.String(), "key_hash") {
+	if c.Actor == "" || c.Write == "" || strings.Contains(w.Body.String(), "key_hash") {
 		t.Fatal("invalid capability", w.Body)
 	}
 	return c
@@ -68,50 +67,29 @@ func TestBoardIdentityContinuity(t *testing.T) {
 	if anon.VerifiedSameActor || anon.ActorID != "" || anon.Name != "unverified: claude" {
 		t.Fatal(anon)
 	}
-	newKey := strings.Repeat("b", 64)
-	if w = boardRequest(b, c.Rotate+"&new_key="+key); w.Code != 400 {
-		t.Fatal("no-op rotation accepted")
+	if w = boardRequest(b, c.Write+"&topic=t&text=First&nonce=same"); w.Code != 200 {
+		t.Fatal("nonce retry failed", w.Body)
 	}
-	w = boardRequest(b, c.Rotate+"&new_key="+newKey)
-	if w.Code != 200 {
-		t.Fatal(w.Body)
-	}
-	var rotated testCapability
-	if err := json.Unmarshal(w.Body.Bytes(), &rotated); err != nil {
-		t.Fatal(err)
-	}
-	if rotated.Actor != c.Actor {
-		t.Fatal("rotation changed actor")
-	}
-	if w = boardRequest(b, c.Write+"&topic=t&text=First&nonce=same"); w.Code != 403 {
-		t.Fatal("old key still works", w.Body)
-	}
-	if w = boardRequest(b, c.Rotate+"&new_key="+newKey); w.Code != 200 {
-		t.Fatal("uncertain rotation cannot retry", w.Body)
-	}
-	if w = boardRequest(b, rotated.Write+"&topic=t&text=First&nonce=same"); w.Code != 200 {
-		t.Fatal("rotation lost nonce", w.Body)
-	}
-	if w = boardRequest(b, rotated.Write+"&topic=t&name=someone-else&text=x&nonce=x"); w.Code != 400 {
+	if w = boardRequest(b, c.Write+"&topic=t&name=someone-else&text=x&nonce=x"); w.Code != 400 {
 		t.Fatal(w.Body)
 	}
 	w = boardRequest(b, "/board/identity?actor="+c.Actor)
-	if w.Code != 200 || strings.Contains(w.Body.String(), key) || strings.Contains(w.Body.String(), newKey) || strings.Contains(w.Body.String(), "key_hash") {
+	if w.Code != 200 || strings.Contains(w.Body.String(), key) || strings.Contains(w.Body.String(), "key_hash") {
 		t.Fatal(w.Body)
 	}
-	if w = boardRequest(b, "/board/feed"); strings.Contains(w.Body.String(), "key_hash") || strings.Contains(w.Body.String(), newKey) {
+	if w = boardRequest(b, "/board/feed"); strings.Contains(w.Body.String(), "key_hash") || strings.Contains(w.Body.String(), key) {
 		t.Fatal("feed leaks credentials")
 	}
 }
 
 func TestBoardIdentityGuards(t *testing.T) {
-	for _, path := range []string{"/board/mint?name=Upper", "/board/mint?name=valid&key=weak", "/board/write?topic=t&text=x&nonce=n&actor=bad&key=bad", "/board/rotate?actor=bad&key=bad"} {
+	for _, path := range []string{"/board/mint?name=Upper", "/board/mint?name=valid&key=weak", "/board/write?topic=t&text=x&nonce=n&actor=bad&key=bad"} {
 		w := boardRequest(newAgentBoard(), path)
 		if w.Code != 400 && w.Code != 403 {
 			t.Fatal(path, w.Code)
 		}
 	}
-	for _, path := range []string{"/board/mint?name=bot", "/board/rotate?actor=bad&key=bad"} {
+	for _, path := range []string{"/board/mint?name=bot"} {
 		for _, method := range []string{"HEAD", "POST", "GET"} {
 			b := newAgentBoard()
 			r := httptest.NewRequest(method, path, nil)
@@ -156,28 +134,23 @@ func TestBoardConcurrentMint(t *testing.T) {
 	}
 }
 
-func TestBoardGeneratedRotationAndCaps(t *testing.T) {
+func TestBoardMintCapsAndNoRotation(t *testing.T) {
 	b := newAgentBoard()
-	c := mintIdentity(t, b, "actor", "", 201)
-	w := boardRequest(b, c.Rotate+"&format=text")
-	if w.Code != 200 || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Robots-Tag") == "" {
+	w := boardRequest(b, "/board/mint?name=actor&format=text")
+	if w.Code != 201 || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Robots-Tag") == "" {
 		t.Fatal(w.Code, w.Header())
 	}
-	var next testCapability
-	if err := json.Unmarshal(w.Body.Bytes(), &next); err != nil {
-		t.Fatal(err)
+	if strings.Contains(w.Body.String(), "rotate_url") {
+		t.Fatal("mint advertises rotation")
 	}
-	if next.Actor != c.Actor || next.Write == c.Write {
-		t.Fatal("generated rotation did not replace key")
+	if w = boardRequest(b, "/board/rotate?actor=anything&key=anything"); w.Code != 404 {
+		t.Fatal("rotation endpoint still exists")
 	}
-	if w = boardRequest(b, next.Rotate+"&new_key=weak"); w.Code != 400 {
-		t.Fatal(w.Body)
-	}
-	if w = boardRequest(b, c.Rotate); w.Code != 403 {
-		t.Fatal("old rotation key accepted")
+	if w = boardRequest(b, "/board"); strings.Contains(w.Body.String(), "/board/rotate") {
+		t.Fatal("capabilities advertise rotation")
 	}
 	b.writes = 120
-	if w = boardRequest(b, next.Rotate); w.Code != 429 {
+	if w = boardRequest(b, "/board/mint?name=limited"); w.Code != 429 {
 		t.Fatal(w.Body)
 	}
 	b = newAgentBoard()
