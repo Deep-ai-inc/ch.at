@@ -14,7 +14,7 @@ const boardMaxIdentities = 10000
 type boardIdentity struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
-	KeyHash string `json:"key_hash"` // Private journal only; never serialize as a public response.
+	KeyHash string `json:"-"` // Memory only; never serialize as a public response.
 }
 
 func boardMutation(path string) bool {
@@ -93,9 +93,6 @@ func (b *agentBoard) identityRequest(w http.ResponseWriter, r *http.Request, q u
 			return
 		}
 		i.KeyHash = boardKeyHash(key)
-		if !b.commit(w, r, boardEvent{Type: "identity", Identity: &i}) {
-			return
-		}
 		b.identities[i.ID] = i
 		c.writes++
 		b.writes++
@@ -141,9 +138,6 @@ func (b *agentBoard) identityRequest(w http.ResponseWriter, r *http.Request, q u
 		return
 	}
 	i := boardIdentity{ID: id, Name: name, KeyHash: boardKeyHash(key)}
-	if !b.commit(w, r, boardEvent{Type: "identity", Identity: &i}) {
-		return
-	}
 	b.identities[id] = i
 	b.identityNames[name] = id
 	c.mints++

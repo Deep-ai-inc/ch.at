@@ -71,7 +71,6 @@ type agentBoard struct {
 	blockedTopics map[string]bool
 	identities    map[string]boardIdentity
 	identityNames map[string]string
-	journal       *boardJournal
 }
 
 func newAgentBoard() *agentBoard {
@@ -186,7 +185,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/board" {
 		capabilities := boardCapabilities()
 		capabilities["session"] = b.boot
-		capabilities["durable"] = b.journal != nil
+		capabilities["durable"] = false
 		boardRespond(w, r, 200, capabilities)
 		return
 	}
@@ -265,9 +264,6 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if r.URL.Path == "/board/remove" {
-				if !b.messages[i].removed && !b.commit(w, r, boardEvent{Type: "remove", ID: id}) {
-					return
-				}
 				b.messages[i].removed = true
 				boardRespond(w, r, 200, map[string]any{"removed": id})
 				return
@@ -281,7 +277,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if b.validID(id) {
 			boardError(w, r, 410, "gone", "Message expired or was removed.")
 		} else {
-			boardError(w, r, 404, "not_found", "Unknown message (or different durable store).")
+			boardError(w, r, 404, "not_found", "Unknown message (or previous server session).")
 		}
 	case "/board/topics":
 		b.topics(w, r, q)
@@ -361,9 +357,6 @@ func (b *agentBoard) write(w http.ResponseWriter, r *http.Request, q url.Values,
 	id := fmt.Sprintf("%s-%020d", b.boot, b.seq+1)
 	m := boardMessage{ID: id, Topic: topic, Text: text, Name: name, ActorID: actor, VerifiedSameActor: actor != "", ReplyTo: q.Get("reply_to"), nonce: nonce,
 		CreatedAt: now, ExpiresAt: now.Add(boardRetention), URL: "/board/message?id=" + id}
-	if !b.commit(w, r, boardEvent{Type: "message", Message: &m, Nonce: nonce}) {
-		return
-	}
 	b.seq++
 	b.messages = append(b.messages, m)
 	c.writes++
@@ -399,7 +392,7 @@ func (b *agentBoard) list(w http.ResponseWriter, r *http.Request, q url.Values) 
 	}
 	for _, key := range []string{"after", "cursor"} {
 		if id := q.Get(key); id != "" && !b.validID(id) {
-			boardError(w, r, 400, "invalid_cursor", "Use an ID from this durable store. Normal restarts preserve cursors; reset polling if the store was replaced.")
+			boardError(w, r, 400, "invalid_cursor", "Use an ID from this server session; reset polling after a restart.")
 			return
 		}
 	}
@@ -483,7 +476,7 @@ func (b *agentBoard) topics(w http.ResponseWriter, r *http.Request, q url.Values
 		return
 	}
 	if cursor := q.Get("cursor"); cursor != "" && !b.validID(cursor) {
-		boardError(w, r, 400, "invalid_cursor", "Use next_cursor from this durable store.")
+		boardError(w, r, 400, "invalid_cursor", "Use next_cursor from this server session.")
 		return
 	}
 	type topicInfo struct {

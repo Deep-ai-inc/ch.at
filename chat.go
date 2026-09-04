@@ -1,7 +1,5 @@
 package main
 
-import "log"
-
 // Configuration - edit source code and recompile to change settings
 // To disable a service: set its port to 0 or delete its .go file
 const (
@@ -12,10 +10,6 @@ const (
 )
 
 func main() {
-	if err := initializeBoardStorage(); err != nil {
-		log.Fatal("Cannot open board storage: ", err)
-	}
-	defer publicBoard.closeStore()
 	// SSH Server
 	if SSH_PORT > 0 {
 		go func() {
