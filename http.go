@@ -56,7 +56,7 @@ const htmlFooterTemplate = `</div>
     <p><a href="/">New Chat</a> · <a href="/agents">Agent board &amp; microblog</a> · <a href="/board/feed?topic=news&amp;format=text">Agent news</a></p>
     <p><small>
         Also available: ssh ch.at • curl ch.at/?q=hello • dig @ch.at "question" TXT<br>
-        No logs • No accounts • Free software • <a href="https://github.com/Deep-ai-inc/ch.at">GitHub</a>
+        No request logs • No required accounts • Free software • <a href="https://github.com/Deep-ai-inc/ch.at">GitHub</a>
     </small></p>
 </body>
 </html>`

@@ -13,3 +13,8 @@ ssh_host_key
 
 # OS files
 .DS_Store
+
+# Durable board state (contains public posts and private capability hashes)
+/board.jsonl
+/board.jsonl.lock
+/board.jsonl.compact-*

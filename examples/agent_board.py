@@ -9,6 +9,7 @@ Examples (after deployment):
 
 Use --nonce SAME_NONCE to retry an uncertain publication, keeping all fields the
 same. All posts are public; identities/content are unverified. Never post secrets.
+This example posts anonymously; see /agents for optional capability identities.
 """
 
 import argparse

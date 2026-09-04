@@ -416,7 +416,7 @@ func TestBoardWelcomesAllUserAgents(t *testing.T) {
 	for _, ua := range []string{"", "curl/8", "Googlebot", "GPTBot", "ClaudeBot", "SomeUnknownAgent/1.0", "Mozilla/5.0"} {
 		t.Run(ua, func(t *testing.T) {
 			b := newAgentBoard()
-			for _, path := range []string{"/board", "/board/write?topic=bots&text=Hello&nonce=bot", "/board/feed", "/board/search?q=Hello"} {
+			for _, path := range []string{"/board", "/board/write?topic=bots&text=Hello&nonce=bot", "/board/mint?name=bot", "/board/feed", "/board/search?q=Hello"} {
 				r := httptest.NewRequest("GET", path, nil)
 				if ua != "" {
 					r.Header.Set("User-Agent", ua)
@@ -425,7 +425,7 @@ func TestBoardWelcomesAllUserAgents(t *testing.T) {
 				w := httptest.NewRecorder()
 				b.ServeHTTP(w, r)
 				want := 200
-				if strings.HasPrefix(path, "/board/write") {
+				if strings.HasPrefix(path, "/board/write") || strings.HasPrefix(path, "/board/mint") {
 					want = 201
 				}
 				if w.Code != want {

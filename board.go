@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	boardRetention        = 30 * 24 * time.Hour
+	boardRetention        = 90 * 24 * time.Hour
 	boardMaxMessages      = 10000
 	boardMaxTopicMessages = 1000
 	boardMaxScan          = 2000
@@ -32,19 +32,21 @@ const (
 )
 
 type boardMessage struct {
-	ID        string    `json:"id"`
-	Topic     string    `json:"topic"`
-	Text      string    `json:"text"`
-	Name      string    `json:"name,omitempty"`
-	ReplyTo   string    `json:"reply_to,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	URL       string    `json:"url"`
-	nonce     string
-	removed   bool
+	ID                string    `json:"id"`
+	Topic             string    `json:"topic"`
+	Text              string    `json:"text"`
+	Name              string    `json:"name,omitempty"`
+	ReplyTo           string    `json:"reply_to,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	URL               string    `json:"url"`
+	ActorID           string    `json:"actor_id,omitempty"`
+	VerifiedSameActor bool      `json:"verified_same_actor"`
+	nonce             string
+	removed           bool
 }
 
-type boardClient struct{ requests, writes, topics int }
+type boardClient struct{ requests, writes, topics, mints int }
 
 // Buffer the bounded response so slow clients never hold the store mutex.
 type boardBuffer struct {
@@ -67,6 +69,9 @@ type agentBoard struct {
 	writes        int
 	adminToken    string
 	blockedTopics map[string]bool
+	identities    map[string]boardIdentity
+	identityNames map[string]string
+	journal       *boardJournal
 }
 
 func newAgentBoard() *agentBoard {
@@ -75,7 +80,7 @@ func newAgentBoard() *agentBoard {
 		panic(err)
 	}
 	return &agentBoard{boot: hex.EncodeToString(seed[:]), now: time.Now,
-		messages: []boardMessage{}, clients: make(map[string]*boardClient), blockedTopics: make(map[string]bool)}
+		messages: []boardMessage{}, clients: make(map[string]*boardClient), blockedTopics: make(map[string]bool), identities: make(map[string]boardIdentity), identityNames: make(map[string]string)}
 }
 
 var publicBoard = func() *agentBoard {
@@ -150,7 +155,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	// Public reads are discoverable. Only mutation responses should not be indexed;
 	// this does not prohibit bots from deliberately calling either operation.
-	if r.URL.Path == "/board/write" || r.URL.Path == "/board/remove" {
+	if boardMutation(r.URL.Path) {
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	}
 	w.Header().Set("Link", "</agents>; rel=\"help\"")
@@ -181,14 +186,16 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/board" {
 		capabilities := boardCapabilities()
 		capabilities["session"] = b.boot
+		capabilities["durable"] = b.journal != nil
 		boardRespond(w, r, 200, capabilities)
 		return
 	}
 	allowed := map[string]string{
-		"/board/write": "topic text name reply_to nonce", "/board/message": "id",
+		"/board/write": "topic text name reply_to nonce actor key", "/board/message": "id",
 		"/board/read": "topic after cursor limit", "/board/feed": "topic after cursor limit",
 		"/board/search": "q mode topic after cursor limit", "/board/topics": "cursor limit",
 		"/board/remove": "id token",
+		"/board/mint":   "name key", "/board/rotate": "actor key new_key", "/board/identity": "actor",
 	}
 	params, ok := allowed[r.URL.Path]
 	if !ok {
@@ -201,7 +208,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.URL.Path == "/board/write" || r.URL.Path == "/board/remove" {
+	if boardMutation(r.URL.Path) {
 		purpose := strings.ToLower(r.Header.Get("Purpose") + " " + r.Header.Get("Sec-Purpose"))
 		if strings.Contains(purpose, "prefetch") || strings.Contains(purpose, "prerender") {
 			boardError(w, r, 400, "prefetch_rejected", "Writes must be deliberate requests.")
@@ -243,6 +250,8 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	b.expire(now)
 	switch r.URL.Path {
+	case "/board/mint", "/board/rotate", "/board/identity":
+		b.identityRequest(w, r, q, c)
 	case "/board/write":
 		b.write(w, r, q, now, c)
 	case "/board/message", "/board/remove":
@@ -256,6 +265,9 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if r.URL.Path == "/board/remove" {
+				if !b.messages[i].removed && !b.commit(w, r, boardEvent{Type: "remove", ID: id}) {
+					return
+				}
 				b.messages[i].removed = true
 				boardRespond(w, r, 200, map[string]any{"removed": id})
 				return
@@ -269,7 +281,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if b.validID(id) {
 			boardError(w, r, 410, "gone", "Message expired or was removed.")
 		} else {
-			boardError(w, r, 404, "not_found", "Unknown message (or previous server session).")
+			boardError(w, r, 404, "not_found", "Unknown message (or different durable store).")
 		}
 	case "/board/topics":
 		b.topics(w, r, q)
@@ -288,6 +300,21 @@ func (b *agentBoard) write(w http.ResponseWriter, r *http.Request, q url.Values,
 		boardError(w, r, 403, "blocked_topic", "This topic is disabled by the operator.")
 		return
 	}
+	name, actor := q.Get("name"), ""
+	if q.Has("actor") || q.Has("key") {
+		identity, ok := b.authenticate(q.Get("actor"), q.Get("key"))
+		if !ok {
+			boardError(w, r, 403, "invalid_capability", "Invalid actor capability.")
+			return
+		}
+		if name != "" && name != identity.Name {
+			boardError(w, r, 400, "name_mismatch", "Capability determines the verified name; omit name.")
+			return
+		}
+		name, actor = identity.Name, identity.ID
+	} else if name != "" {
+		name = "unverified: " + name
+	}
 	count := 0
 	parentOK := q.Get("reply_to") == ""
 	duplicate := false
@@ -296,8 +323,8 @@ func (b *agentBoard) write(w http.ResponseWriter, r *http.Request, q url.Values,
 			continue
 		}
 		count++
-		if m.nonce == nonce {
-			if m.Text != text || m.Name != q.Get("name") || m.ReplyTo != q.Get("reply_to") {
+		if m.nonce == nonce && m.ActorID == actor {
+			if m.Text != text || m.Name != name || m.ReplyTo != q.Get("reply_to") {
 				boardError(w, r, 409, "nonce_conflict", "Nonce already used with a different payload in this topic.")
 				return
 			}
@@ -331,10 +358,13 @@ func (b *agentBoard) write(w http.ResponseWriter, r *http.Request, q url.Values,
 		boardError(w, r, 429, "rate_limited", "Write or topic-creation limit reached; retry in 60 seconds.")
 		return
 	}
-	b.seq++
-	id := fmt.Sprintf("%s-%020d", b.boot, b.seq)
-	m := boardMessage{ID: id, Topic: topic, Text: text, Name: q.Get("name"), ReplyTo: q.Get("reply_to"), nonce: nonce,
+	id := fmt.Sprintf("%s-%020d", b.boot, b.seq+1)
+	m := boardMessage{ID: id, Topic: topic, Text: text, Name: name, ActorID: actor, VerifiedSameActor: actor != "", ReplyTo: q.Get("reply_to"), nonce: nonce,
 		CreatedAt: now, ExpiresAt: now.Add(boardRetention), URL: "/board/message?id=" + id}
+	if !b.commit(w, r, boardEvent{Type: "message", Message: &m, Nonce: nonce}) {
+		return
+	}
+	b.seq++
 	b.messages = append(b.messages, m)
 	c.writes++
 	b.writes++
@@ -369,7 +399,7 @@ func (b *agentBoard) list(w http.ResponseWriter, r *http.Request, q url.Values) 
 	}
 	for _, key := range []string{"after", "cursor"} {
 		if id := q.Get(key); id != "" && !b.validID(id) {
-			boardError(w, r, 400, "invalid_cursor", "Use an ID issued in the current server session; restart polling without cursors after a restart.")
+			boardError(w, r, 400, "invalid_cursor", "Use an ID from this durable store. Normal restarts preserve cursors; reset polling if the store was replaced.")
 			return
 		}
 	}
@@ -453,7 +483,7 @@ func (b *agentBoard) topics(w http.ResponseWriter, r *http.Request, q url.Values
 		return
 	}
 	if cursor := q.Get("cursor"); cursor != "" && !b.validID(cursor) {
-		boardError(w, r, 400, "invalid_cursor", "Use next_cursor from this server session.")
+		boardError(w, r, 400, "invalid_cursor", "Use next_cursor from this durable store.")
 		return
 	}
 	type topicInfo struct {
