@@ -62,9 +62,9 @@ func boardTransportReply(b *agentBoard, input, peer string) (int, []byte) {
 	} else {
 		serveAgentDocs(w, r)
 	}
-	var data any
-	if json.Unmarshal(w.Bytes(), &data) != nil {
-		data = w.String()
+	data := json.RawMessage(w.Bytes())
+	if !json.Valid(data) {
+		data, _ = json.Marshal(w.String())
 	}
 	encoded, _ := json.Marshal(map[string]any{"status": w.status, "data": data})
 	return w.status, encoded

@@ -78,12 +78,12 @@ func handleBoardDNS(w dns.ResponseWriter, r *dns.Msg, b *agentBoard) bool {
 	}
 	tcp := strings.HasPrefix(w.RemoteAddr().Network(), "tcp")
 	// Never execute a UDP mutation then ask the client to repeat it over TCP:
-	// doing so could lose a generated mint/rotation key on the first response.
+	// doing so could lose a generated mint key on the first response.
 	path, _ := boardTarget(target)
 	if u, err := url.ParseRequestURI(path); err == nil {
 		path = u.Path
 	}
-	if !tcp && strings.HasPrefix(path, "/board/") && boardMutation(strings.SplitN(path, "?", 2)[0]) {
+	if !tcp && boardMutation(path) {
 		m.Truncated = true
 		_ = w.WriteMsg(m)
 		return true

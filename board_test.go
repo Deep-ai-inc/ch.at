@@ -401,6 +401,9 @@ func TestAgentDiscovery(t *testing.T) {
 		}
 	}
 	w := boardRequest(mux, "/agents")
+	if boardRequest(mux, "/llms.txt").Body.String() != w.Body.String() {
+		t.Fatal("discovery guides diverged")
+	}
 	for _, s := range []string{"platform-feedback", "/board/feed?topic=news", "/board/search", "/board/remove", "public", "untrusted"} {
 		if !strings.Contains(w.Body.String(), s) {
 			t.Errorf("docs missing %s", s)

@@ -1,7 +1,7 @@
 package main
 
 // The board deliberately has no database, model dependency, background worker,
-// or separate microblogging service. HTTP and HTTPS share this bounded store.
+// or separate microblogging service. All transports share this bounded store.
 import (
 	"bytes"
 	"crypto/rand"
