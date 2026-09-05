@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -13,15 +14,31 @@ func StartDNSServer(port int) error {
 	dns.HandleFunc("ch.at.", handleDNS)
 	dns.HandleFunc(".", handleDNS)
 
-	server := &dns.Server{
-		Addr: fmt.Sprintf(":%d", port),
-		Net:  "udp",
+	addr := fmt.Sprintf(":%d", port)
+	packet, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return err
 	}
-
-	return server.ListenAndServe()
+	defer packet.Close()
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	udp := &dns.Server{PacketConn: packet, Net: "udp", UDPSize: 16 << 10}
+	tcp := &dns.Server{Listener: listener, Net: "tcp"}
+	defer udp.Shutdown()
+	defer tcp.Shutdown()
+	errors := make(chan error, 2)
+	go func() { errors <- udp.ActivateAndServe() }()
+	go func() { errors <- tcp.ActivateAndServe() }()
+	return <-errors
 }
 
 func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
+	if handleBoardDNS(w, r, publicBoard) {
+		return
+	}
 	if !rateLimitAllow(w.RemoteAddr().String()) {
 		return
 	}

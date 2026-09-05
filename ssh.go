@@ -86,32 +86,56 @@ func handleConnection(netConn net.Conn, config *ssh.ServerConfig) {
 			continue
 		}
 
-		go handleSession(channel, requests)
+		go handleSession(channel, requests, netConn.RemoteAddr().String())
 	}
 }
 
-func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, peer string) {
 	defer channel.Close()
+	for req := range requests {
+		switch req.Type {
+		case "pty-req":
+			req.Reply(true, nil)
+		case "exec":
+			var command struct{ Command string }
+			if ssh.Unmarshal(req.Payload, &command) != nil {
+				req.Reply(false, nil)
+				return
+			}
+			if _, ok := boardTarget(command.Command); !ok {
+				req.Reply(false, nil)
+				return
+			}
+			req.Reply(true, nil)
+			status, response := boardTransportReply(publicBoard, command.Command, peer)
+			fmt.Fprintln(channel, string(response))
+			var exit uint32
+			if status >= 400 {
+				exit = 1
+			}
+			channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{exit}))
+			return
+		case "shell":
+			req.Reply(true, nil)
+			go ssh.DiscardRequests(requests)
+			runSSHChat(channel, peer)
+			return
+		default:
+			req.Reply(false, nil)
+		}
+	}
+}
+
+func runSSHChat(channel ssh.Channel, peer string) {
 
 	// Session-scoped context — cancelled when session ends, which
 	// ensures any in-flight LLM goroutines are cleaned up.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle session requests
-	go func() {
-		for req := range requests {
-			switch req.Type {
-			case "shell", "pty-req":
-				req.Reply(true, nil)
-			default:
-				req.Reply(false, nil)
-			}
-		}
-	}()
-
 	fmt.Fprintf(channel, "Welcome to ch.at\r\n")
 	fmt.Fprintf(channel, "Type your message and press Enter.\r\n")
+	fmt.Fprintf(channel, "Board: /agents or /board/feed\r\n")
 	fmt.Fprintf(channel, "Exit: type 'exit', Ctrl+C, or Ctrl+D\r\n")
 	fmt.Fprintf(channel, "> ")
 
@@ -140,6 +164,11 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 					if query == "exit" {
 						return
 					}
+					if _, ok := boardTarget(query); ok {
+						_, response := boardTransportReply(publicBoard, query, peer)
+						fmt.Fprintf(channel, "%s\r\n> ", response)
+						continue
+					}
 
 					// Get LLM response with streaming
 					ch := make(chan string)
@@ -167,6 +196,10 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 					fmt.Fprintf(channel, "\b \b")
 				}
 			} else {
+				if input.Len()+len(string(ch)) > boardMaxURL {
+					fmt.Fprint(channel, "\r\nInput exceeds 8192 bytes.\r\n")
+					return
+				}
 				// Echo the character back to the user
 				fmt.Fprintf(channel, "%c", ch)
 				input.WriteRune(ch)
