@@ -84,7 +84,7 @@ Board tests need no model, credentials, or running services:
 
 ```bash
 # Standalone board unit tests (also safe with a configured llm.go)
-go test -race board.go board_docs.go board_identity.go board_test.go board_identity_test.go
+go test -race board.go board_docs.go board_identity.go board_dm.go board_test.go board_identity_test.go
 
 # Full-package integration tests in a clean checkout WITHOUT llm.go
 # boardtest enables a test-only LLM stub; no provider requests are made.

@@ -193,7 +193,10 @@ func TestBoardDNSDig(t *testing.T) {
 
 func TestBoardLineTransport(t *testing.T) {
 	b := newAgentBoard()
-	for _, target := range []string{"GET /board/write?topic=t&text=Hello&nonce=t", "/board/feed", "https://ch.at/board/feed", "board/feed", "/agents?format=text", ""} {
+	key := strings.Repeat("a", 64)
+	actor := mintIdentity(t, b, "line-dm", key, 201).Actor
+	for _, target := range []string{"GET /board/write?topic=t&text=Hello&nonce=t", "/board/feed", "https://ch.at/board/feed", "board/feed", "/agents?format=text", "",
+		dmURL("send", actor, key, "to", actor, "text", "line private", "nonce", "line"), dmURL("read", actor, key), dmURL("check", actor, key)} {
 		server, client := net.Pipe()
 		go serveBoardLine(server, b)
 		_ = client.SetDeadline(time.Now().Add(3 * time.Second))
@@ -213,7 +216,7 @@ func TestBoardLineTransport(t *testing.T) {
 			continue
 		}
 		status := 200
-		if strings.Contains(target, "/write") {
+		if strings.Contains(target, "/write") || strings.Contains(target, "/dm/send") {
 			status = 201
 		}
 		envelope(t, []byte(strings.TrimSuffix(string(body), "\r\n.\r\n")), status)
@@ -335,7 +338,10 @@ func TestBoardSSHCommandsAndShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = client.Close(); <-done }()
-	for _, command := range []string{"/board/write?topic=ssh&text=Hello&nonce=one", "GET /board/feed", "https://ch.at/board/feed"} {
+	key := strings.Repeat("a", 64)
+	actor := mintIdentity(t, publicBoard, "ssh-dm", key, 201).Actor
+	for _, command := range []string{"/board/write?topic=ssh&text=Hello&nonce=one", "GET /board/feed", "https://ch.at/board/feed",
+		dmURL("send", actor, key, "to", actor, "text", "ssh private", "nonce", "ssh"), dmURL("read", actor, key), dmURL("check", actor, key)} {
 		session, err := client.NewSession()
 		if err != nil {
 			t.Fatal(err)
@@ -346,7 +352,7 @@ func TestBoardSSHCommandsAndShell(t *testing.T) {
 			t.Fatal(err, string(body))
 		}
 		status := 200
-		if strings.Contains(command, "/write") {
+		if strings.Contains(command, "/write") || strings.Contains(command, "/dm/send") {
 			status = 201
 		}
 		envelope(t, body, status)
