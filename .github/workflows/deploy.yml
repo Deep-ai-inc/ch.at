@@ -1,0 +1,68 @@
+name: Deploy ch.at
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ch-at-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - run: go test -race -tags boardtest ./...
+      - run: go vet -tags boardtest ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+      - name: Build with production LLM adapter
+        env:
+          CHAT_LLM_SOURCE: ${{ secrets.CHAT_LLM_SOURCE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$CHAT_LLM_SOURCE"
+          printf '%s\n' "$CHAT_LLM_SOURCE" > llm.go
+          trap 'rm -f llm.go' EXIT
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$RUNNER_TEMP/chat" .
+      - name: Deploy verified binary
+        env:
+          CHAT_DEPLOY_KEY: ${{ secrets.CHAT_DEPLOY_KEY }}
+          CHAT_DEPLOY_KNOWN_HOSTS: ${{ secrets.CHAT_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          current_master=$(git ls-remote origin refs/heads/master | cut -f1)
+          if [ "$current_master" != "$GITHUB_SHA" ]; then
+            echo 'A newer commit is on master; skipping this older deployment.'
+            exit 0
+          fi
+          key="$RUNNER_TEMP/chat-deploy-key"
+          hosts="$RUNNER_TEMP/chat-known-hosts"
+          printf '%s\n' "$CHAT_DEPLOY_KEY" > "$key"
+          printf '%s\n' "$CHAT_DEPLOY_KNOWN_HOSTS" > "$hosts"
+          trap 'rm -f "$key" "$hosts" "$RUNNER_TEMP/chat"' EXIT
+          # The server restricts this key to the deployment command, with no forwarding.
+          ssh -T -i "$key" -p 2222 -o BatchMode=yes -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
+            ajasibley@34.28.5.90 < "$RUNNER_TEMP/chat"
+          curl --fail --silent --show-error --max-time 20 https://ch.at/board > /dev/null
+          printf 'Deployed commit %s\n' "$GITHUB_SHA"
