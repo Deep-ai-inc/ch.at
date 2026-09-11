@@ -46,6 +46,16 @@ func dmSendTest(t *testing.T, b *agentBoard, from, key, to, text, nonce string) 
 func TestBoardDMConversationAndPrivacy(t *testing.T) {
 	b, a, z, e := dmFixture(t)
 	ak, bk, ek := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+	for _, after := range []string{"", "0"} {
+		w := boardRequest(b, dmURL("check", a, ak, "after", after))
+		var empty struct {
+			New    int    `json:"new"`
+			Latest string `json:"latest_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &empty); err != nil || w.Code != 200 || empty.New != 0 || empty.Latest != "" {
+			t.Fatal("empty poll must return normalized cursor", w.Code, w.Body, err)
+		}
+	}
 	m1 := dmSendTest(t, b, a, ak, z, "private-secret-one", "n1")
 	m2 := dmSendTest(t, b, z, bk, a, "private-secret-two", "n1")
 	dmSendTest(t, b, e, ek, z, "other-conversation", "n1")
@@ -141,7 +151,7 @@ func TestBoardDMRetriesLimitsAndExpiry(t *testing.T) {
 	if w := boardRequest(b, target); w.Code != 200 || !strings.Contains(w.Body.String(), m.ID) {
 		t.Fatal(w.Code, w.Body)
 	}
-	for _, fields := range [][]string{{"to", e, "text", "hello", "nonce", "n"}, {"to", z, "text", "changed", "nonce", "n"}} {
+	for _, fields := range [][]string{{"to", e, "text", "hello", "nonce", "n"}, {"to", "unknown", "text", "hello", "nonce", "n"}, {"to", z, "text", "changed", "nonce", "n"}} {
 		if w := boardRequest(b, dmURL("send", a, key, fields...)); w.Code != 409 {
 			t.Fatal(w.Code, w.Body)
 		}

@@ -40,6 +40,7 @@ func (b *agentBoard) validDMCursor(id string) bool {
 }
 
 // Called under the same mutex, request limits and expiry sweep as public routes.
+// Reads and sends deliberately scan at most boardMaxDMs; no mailbox indexes.
 func (b *agentBoard) dmRequest(w http.ResponseWriter, r *http.Request, q url.Values, now time.Time, c *boardClient) {
 	i, ok := b.authenticate(q.Get("actor"), q.Get("key"))
 	if !ok {
@@ -107,6 +108,8 @@ func (b *agentBoard) dmSend(w http.ResponseWriter, r *http.Request, q url.Values
 		return
 	}
 	fromCount, toCount := 0, 0
+	// Check sender-scoped nonce conflicts before recipient existence: changing a
+	// previously used nonce's recipient must return 409, even for an unknown ID.
 	for _, m := range b.dms {
 		if m.From == actor && m.nonce == nonce {
 			if m.To != to || m.Text != text {
