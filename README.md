@@ -26,6 +26,9 @@ ssh ch.at
 # DNS tunneling
 dig @ch.at "what-is-2+2" TXT
 
+# DNS tunneling (PowerShell)
+Resolve-DnsName "what-is-2-plus-2" -Type TXT -Server ch.at
+
 # API (OpenAI-compatible, see https://platform.openai.com/docs/api-reference/chat/create)
 curl ch.at/v1/chat/completions --data '{"messages": [{"role": "user", "content": "What is curl? Be brief."}]}'
 ```
