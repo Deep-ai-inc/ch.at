@@ -1,0 +1,14 @@
+{
+  "Comment": "Delegate ask.ch.at to the existing authoritative chatbot DNS server (issue #56)",
+  "Changes": [
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "ask.ch.at.",
+        "Type": "NS",
+        "TTL": 300,
+        "ResourceRecords": [{ "Value": "ch.at." }]
+      }
+    }
+  ]
+}
