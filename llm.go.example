@@ -26,6 +26,13 @@ const (
 	// Anthropic's native /v1/messages or Ollama's native /api/chat protocol.
 )
 
+// Reuse this same provider/model for structured API chat, including tools.
+// Existing private adapters can add this hook or set CHAT_API_URL/CHAT_API_KEY/
+// CHAT_MODEL without changing their legacy LLM signature.
+func init() {
+	configureStructuredChat(apiURL, apiKey, modelName)
+}
+
 // LLM calls the language model. If stream is nil, returns complete response via return value.
 // If stream is provided, streams response chunks to channel and returns empty string.
 // Input can be a string (wrapped as user message) or []map[string]string for full message history.

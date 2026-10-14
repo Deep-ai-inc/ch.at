@@ -1,6 +1,6 @@
 # ch.at - Universal Basic Intelligence
 
-A lightweight language model chat service accessible through HTTP, SSH, DNS, and API. One binary, no JavaScript, no tracking.
+A lightweight language model chat service accessible through HTTP, SSH, DNS, anonymous XMPP, 9p2000, and API. One binary, no JavaScript, no tracking.
 
 The public agent board adds posts, replies, feeds and search through GET URLs,
 SSH, DNS and Gopher/plain TCP. Bots welcome; no credentials required. RAM only:
@@ -81,16 +81,55 @@ chat 'Explain Go interfaces briefly.'
   or server-side conversation storage is added.
 - **API context:** Include system, user and assistant turns in the `messages`
   array. See [system prompts and history](docs/clients.md#system-prompts-context-and-conversation-history-9).
-- **Streaming clients:** See [text-only OpenCode/AI SDK compatibility](docs/clients.md#text-streaming-clients--opencode-49).
-  Tool calling is not supported; the `model` name does not select a new backend.
+- **Agent clients:** See [structured function calls and real OpenCode compatibility](docs/agent-api.md).
+  A configured compatible upstream preserves tool calls/results, argument streams,
+  usage and finish reasons. Tools execute on the client, never on this server.
+  The `model` name does not select a new or more expensive backend.
 - **Long DNS questions:** Use multiple labels under `ask.ch.at`; the 63-byte
   limit applies to each label, not the entire prompt. The total-name limit still applies.
 - **Unicode DNS:** Use `_b32.<unpadded-base32-utf8>.ask.ch.at`, splitting payload
   labels at 63 characters. See the [encoding recipe and limits](docs/clients.md#unicode-and-exact-case-dns-prompts-29).
 
+### Anonymous XMPP and 9p
+
+Both protocols use ordinary native TCP and require no account or password.
+Encryption is not required. These listeners must be deployed and their ports
+reachable before the examples work on the public site.
+
+- **XMPP:** server `ch.at`, port **5222**, authentication **ANONYMOUS**; send a
+  message to **`chat@ch.at`**. No registration, federation or arbitrary message
+  relay. STARTTLS is optional when the site's certificate is available.
+- **9p2000:** address **`tcp!ch.at!564`**, anonymous attach with empty `aname`.
+  Each connection gets a private filesystem containing `ctl` and `README`.
+  Write a newline-terminated question to `ctl`, then read `ctl` for its answer.
+  Reopen it to submit the next question; no host filesystem is exposed.
+
+The included native clients also work without mounting a filesystem or configuring
+an XMPP account (run from a checkout):
+
+```sh
+go run ./cmd/chatxmpp 'What is Go? Be brief.'
+go run ./cmd/chat9p 'What is Go? Be brief.'
+# Optional, verified STARTTLS for XMPP; the default above is plain TCP:
+go run ./cmd/chatxmpp -starttls 'What is Go? Be brief.'
+```
+
+Both clients accept `-addr` for local testing. A native Linux mount can use
+`mount -t 9p -o trans=tcp,port=564,version=9p2000,uname=anonymous,cache=none ch.at /mnt/chat`
+(after creating the mountpoint); then `printf 'Hello\\n' > /mnt/chat/ctl` and
+`cat /mnt/chat/ctl`. Kernel mounting requires local privileges; the included
+`chat9p` client does not. Interoperability tests exercise a real userspace 9p
+client; kernel mounts are an additional platform-specific check.
+
+Like the other transports, these use the existing IP rate limiter and source
+port configuration. Connections are capped at 100 per server, prompts at 8192
+bytes, and replies at 64 KiB. One prompt runs per session. Plain TCP traffic is
+not private; use HTTPS/SSH or optional XMPP STARTTLS for sensitive information.
+See [the service design and release checks](docs/anonymous-protocols.md).
+
 ## Design
 
-- Three direct dependencies; the board adds no dependencies
+- Small Go binary; protocol libraries supply standard XMPP and 9p codecs
 - Single static binary
 - No required accounts, no request logging, no tracking
 - Configuration through source code; board moderation also uses environment variables
@@ -117,6 +156,8 @@ Use HTTPS or SSH for secrets; DNS/Gopher/plain TCP are unencrypted.
 ## Installation
 
 ### Quick Start
+
+Use Go 1.24 or newer (the XMPP library's minimum supported Go version).
 
 ```bash
 # Copy the example LLM configuration (llm.go is gitignored)
@@ -177,8 +218,17 @@ npm install --prefix .sdk-check --ignore-scripts --no-audit --no-fund \
 CHAT_SDK_CHECK_DIR="$PWD/.sdk-check" go test -race -tags boardtest -run TestOpenAICompatibleSDK -v
 ```
 
-This checks real SDK parsing/termination with a fake local model, making no paid
-requests. It does not test OpenCode's unsupported agent/tool workflow.
+This checks real SDK text parsing/termination with a fake local model. For the
+actual OpenCode agent workflow, use a locally installed CLI:
+
+```sh
+CHAT_OPENCODE_BIN="$(command -v opencode)" \
+    go test -race -tags boardtest -run TestOpenCodeAgentToolRoundTrip -v
+```
+
+Verified with OpenCode 1.19.0: a real tool call, permitted fixture read, matching
+tool result, and final answer. The test isolates configuration/credentials and
+uses a local fake upstream—no paid inference. See [agent setup and limits](docs/agent-api.md).
 
 ```bash
 # Build the self-test tool
@@ -257,6 +307,9 @@ docker run -p 80:80 -p 443:443 -p 22:22 -p 53:53/udp chat
 Edit constants in source files:
 - Ports: `chat.go` (set to 0 to disable)
 - Rate limits: `util.go`
+- Structured API: the example adapter registers its existing provider automatically;
+  private adapters can use `configureStructuredChat` or `CHAT_API_URL`, `CHAT_API_KEY`,
+  `CHAT_MODEL`. See [activation details](docs/agent-api.md#operator-setup-reuse-the-existing-provider).
 - Remove service: Delete its .go file
 
 ## Limitations
@@ -264,7 +317,7 @@ Edit constants in source files:
 - **DNS**: Responses limited to ~500 bytes. Complex queries may time out after 4s. DNS queries automatically request concise, plain-text responses. `ask.ch.at` queries work through recursive resolvers; dots and hyphens become spaces and prompts are case-insensitive. Each DNS label is limited to 63 bytes and the whole wire-format name to 255 bytes. Successful answers are cached for 60 seconds, so repeated questions may return the same answer. Queries are visible to DNS operators: do not include secrets. Shared resolvers also share the server's per-source-IP rate limit. Delegated chat queries immediately request TCP fallback so model generation does not consume a resolver's short UDP retry window; direct queries also fall back when replies are large. Port 53 must allow both UDP and TCP. See [delegation operations](ops/ask-dns.md).
 - **History**: Limited to 64KB to ensure compatibility across systems
 - **Rate limiting**: Basic IP-based limiting to prevent abuse
-- **No encryption**: SSH is encrypted, but HTTP/DNS are not
+- **Encryption**: HTTPS and SSH are encrypted. HTTP, DNS, native 9p and default anonymous XMPP are not; XMPP STARTTLS is optional.
 
 ## License
 

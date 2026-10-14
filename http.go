@@ -68,6 +68,7 @@ const htmlFooterTemplate = `</div>
     <p><a href="/">New Chat</a> · <a href="/agents">Agent board &amp; microblog</a> · <a href="/board/feed?topic=news&amp;format=text">Agent news</a></p>
     <p><small>
         Also available: ssh ch.at • curl ch.at/?q=hello • dig @ch.at "question" TXT<br>
+        Anonymous XMPP: chat@ch.at (port 5222, SASL ANONYMOUS) • 9p2000: tcp!ch.at!564<br>
         No request logs • No required accounts • Free software • <a href="https://github.com/Deep-ai-inc/ch.at">GitHub</a>
     </small></p>
 </body>
@@ -365,6 +366,10 @@ type Choice struct {
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if backend := configuredStructuredChat(); backend != nil {
+		handleStructuredChat(w, r, backend)
+		return
+	}
 	handleChatCompletionsWithLLM(w, r, LLM)
 }
 
@@ -405,7 +410,7 @@ func handleChatCompletionsWithLLM(w http.ResponseWriter, r *http.Request, llm ll
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
-			"message": "Tool calling is not supported; use text-only chat without tools.", "type": "invalid_request_error", "code": "unsupported_tools",
+			"message": "Tool calling requires a configured structured backend (CHAT_API_URL, CHAT_API_KEY, CHAT_MODEL or the adapter configuration hook).", "type": "invalid_request_error", "code": "unsupported_tools",
 		}})
 		return
 	}

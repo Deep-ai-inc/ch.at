@@ -11,6 +11,8 @@ ops.json
 
 # Optional local SDK compatibility test dependencies
 /.sdk-check/
+/.opencode-check/
+/.opencode-agent-test-*/
 
 # SSH host key
 ssh_host_key

@@ -163,7 +163,7 @@ func TestChatCompletionsHistoryAndNonstreamFinish(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsUnsupportedTools(t *testing.T) {
+func TestLegacyChatCompletionsRequireToolBackend(t *testing.T) {
 	for _, tools := range []string{`"tools":[{"type":"function","function":{"name":"test"}}]`, `"tool_choice":"auto"`, `"tools":{}`} {
 		w := httptest.NewRecorder()
 		var calls atomic.Int32
