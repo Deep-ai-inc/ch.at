@@ -134,6 +134,14 @@ func handleChatDNS(w dns.ResponseWriter, r *dns.Msg, llm dnsLLM) {
 	if q.Qtype != dns.TypeTXT {
 		return
 	}
+	// Model generation is slow relative to recursive resolvers' UDP retry
+	// windows. Immediately request TCP for delegated TXT queries, before any
+	// model call or rate-limit charge. TCP also avoids duplicate generation
+	// when a full answer would exceed the request's UDP payload budget.
+	if delegated && !strings.HasPrefix(w.RemoteAddr().Network(), "tcp") {
+		m.Truncated = true
+		return
+	}
 	if !rateLimitAllow(w.RemoteAddr().String()) {
 		m.Rcode = dns.RcodeRefused
 		return

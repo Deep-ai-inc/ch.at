@@ -81,14 +81,14 @@ func TestChatDNSResponses(t *testing.T) {
 		t.Run(tc.name+dns.TypeToString[tc.qtype], func(t *testing.T) {
 			r := new(dns.Msg)
 			r.SetQuestion(tc.name, tc.qtype)
-			w := &chatDNSWriter{ip: fmt.Sprintf("192.0.2.%d", 50+i)}
+			w := &chatDNSWriter{ip: fmt.Sprintf("192.0.2.%d", 50+i), network: "tcp"}
 			called := false
 			handleChatDNS(w, r, func(ctx context.Context, input interface{}, ch chan<- string) (string, error) {
 				called = true
+				defer close(ch)
 				if input != "Answer in 500 characters or less, no markdown formatting: what is 2+2" {
 					return "", fmt.Errorf("wrong prompt: %s", input)
 				}
-				defer close(ch)
 				ch <- "4"
 				return "", nil
 			})
@@ -106,13 +106,31 @@ func TestChatDNSResponses(t *testing.T) {
 	}
 }
 
+func TestDelegatedUDPRequestsTCPBeforeModel(t *testing.T) {
+	for _, edns := range []bool{false, true} {
+		r := new(dns.Msg)
+		r.SetQuestion("hello.ask.ch.at.", dns.TypeTXT)
+		if edns {
+			r.SetEdns0(1232, false)
+		}
+		w := &chatDNSWriter{ip: "192.0.2.100"}
+		handleChatDNS(w, r, func(context.Context, interface{}, chan<- string) (string, error) {
+			t.Error("UDP must not invoke the model")
+			return "", nil
+		})
+		if !w.msg.Truncated || w.msg.Rcode != dns.RcodeSuccess || len(w.msg.Answer) != 0 {
+			t.Fatal(w.msg)
+		}
+	}
+}
+
 func TestChatDNSInvalidRequests(t *testing.T) {
 	for i, kind := range []string{"empty", "multiple", "class", "opcode", "provider", "rate"} {
 		t.Run(kind, func(t *testing.T) {
 			r := new(dns.Msg)
 			r.SetQuestion("hello.ask.ch.at.", dns.TypeTXT)
 			want := dns.RcodeFormatError
-			w := &chatDNSWriter{ip: fmt.Sprintf("192.0.2.%d", 80+i)}
+			w := &chatDNSWriter{ip: fmt.Sprintf("192.0.2.%d", 80+i), network: "tcp"}
 			switch kind {
 			case "empty":
 				r.Question = nil
@@ -214,7 +232,17 @@ func TestChatDNSWireAndTCPFallback(t *testing.T) {
 		t.Cleanup(func() { _ = s.Shutdown() })
 	}
 	r := new(dns.Msg)
-	r.SetQuestion(strings.Repeat("a", 63)+"."+strings.Repeat("b", 63)+".ask.ch.at.", dns.TypeTXT)
+	r.SetQuestion(strings.Repeat("a", 63)+"."+strings.Repeat("b", 63)+".ch.at.", dns.TypeTXT)
+	// A standard resolver must transparently retry delegated chat over TCP.
+	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, tcp.Addr().String())
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	txt, err := resolver.LookupTXT(ctx, "hello.ask.ch.at")
+	if err != nil || len(txt) != 1 || txt[0] != answer {
+		t.Fatalf("recursive TCP fallback: %q %v", txt, err)
+	}
 	for _, network := range []string{"udp", "tcp", "edns"} {
 		client := &dns.Client{Net: network, Timeout: time.Second}
 		if network == "edns" {
