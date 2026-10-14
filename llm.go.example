@@ -3,11 +3,13 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Configuration - Replace with your API credentials
@@ -17,21 +19,22 @@ const (
 	apiURL    = "https://api.openai.com/v1/chat/completions"
 	modelName = "gpt-3.5-turbo" // or gpt-4, etc.
 
-	// Option 2: Anthropic Claude API (uncomment to use)
-	// apiKey     = "YOUR_API_KEY_HERE"
-	// apiURL     = "https://api.anthropic.com/v1/messages"
-	// modelName  = "claude-3-haiku" // or claude-3-opus, etc.
-
-	// Option 3: Local LLM (uncomment to use)
-	// apiKey     = "" // No API key needed for local models
-	// apiURL     = "http://localhost:11434/api/chat" // Ollama example
-	// modelName  = "llama2" // or mixtral, phi, etc.
+	// Alternative: an existing OpenAI-compatible local server (for example,
+	// llamafile at http://127.0.0.1:8080/v1/chat/completions, or Ollama at
+	// http://127.0.0.1:11434/v1/chat/completions). Set apiKey to "" and select
+	// a model already available on that server. This adapter does not speak
+	// Anthropic's native /v1/messages or Ollama's native /api/chat protocol.
 )
 
 // LLM calls the language model. If stream is nil, returns complete response via return value.
 // If stream is provided, streams response chunks to channel and returns empty string.
 // Input can be a string (wrapped as user message) or []map[string]string for full message history.
-func LLM(input interface{}, stream chan<- string) (string, error) {
+func LLM(ctx context.Context, input interface{}, stream chan<- string) (string, error) {
+	// The adapter owns the stream and must close it on every return path,
+	// including invalid input, HTTP errors and cancellation.
+	if stream != nil {
+		defer close(stream)
+	}
 	// Build messages array
 	var messages []map[string]string
 	switch v := input.(type) {
@@ -44,7 +47,7 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid input type")
 	}
-	
+
 	// Build request
 	requestBody := map[string]interface{}{
 		"model":       modelName,
@@ -52,10 +55,9 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 		"temperature": 0.7,
 		"max_tokens":  500,
 	}
-	
+
 	if stream != nil {
 		requestBody["stream"] = true
-		defer close(stream)
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
@@ -63,7 +65,7 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
 	}
@@ -73,7 +75,7 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -81,7 +83,7 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -95,14 +97,18 @@ func LLM(input interface{}, stream chan<- string) (string, error) {
 				if data == "[DONE]" {
 					return "", nil
 				}
-				
+
 				var chunk map[string]interface{}
 				if err := json.Unmarshal([]byte(data), &chunk); err == nil {
 					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
 						if choice, ok := choices[0].(map[string]interface{}); ok {
 							if delta, ok := choice["delta"].(map[string]interface{}); ok {
 								if content, ok := delta["content"].(string); ok {
-									stream <- content
+									select {
+									case stream <- content:
+									case <-ctx.Done():
+										return "", ctx.Err()
+									}
 								}
 							}
 						}

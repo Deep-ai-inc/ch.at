@@ -39,6 +39,55 @@ Resolve-DnsName "what-is-2-plus-2.ask.ch.at" -Type TXT
 curl ch.at/v1/chat/completions --data '{"messages": [{"role": "user", "content": "What is curl? Be brief."}]}'
 ```
 
+### Answer-only shell helpers
+
+Use `raw=1` for streamed UTF-8 text without the question echo or `Q:`/`A:` labels.
+These helpers encode prompts safely and use HTTPS; neither logs conversations.
+
+Bash / Zsh (add to your shell profile; requires `curl`):
+
+```bash
+chat() {
+    if [ "$#" -eq 0 ] || [ -z "$*" ]; then
+        printf 'Usage: chat "your question"\n' >&2
+        return 2
+    fi
+    curl --fail --silent --show-error --no-buffer --get \
+        --data-urlencode "q=$*" --data-urlencode 'raw=1' https://ch.at/
+}
+chat 'Explain Go interfaces briefly.'
+```
+
+PowerShell (returns the completed answer):
+
+```powershell
+function chat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Message
+    )
+    $query = [uri]::EscapeDataString($Message)
+    Invoke-RestMethod -Uri "https://ch.at/?raw=1&q=$query" -Method Get -ErrorAction Stop
+}
+chat 'Explain Go interfaces briefly.'
+```
+
+### History, API clients and DNS encoding
+
+- **Web:** Open **Edit this question** on any turn, edit it and choose
+  **Regenerate from here**. Earlier turns are retained; that answer and later
+  turns are replaced. The footer also offers an editable transcript. No JavaScript
+  or server-side conversation storage is added.
+- **API context:** Include system, user and assistant turns in the `messages`
+  array. See [system prompts and history](docs/clients.md#system-prompts-context-and-conversation-history-9).
+- **Streaming clients:** See [text-only OpenCode/AI SDK compatibility](docs/clients.md#text-streaming-clients--opencode-49).
+  Tool calling is not supported; the `model` name does not select a new backend.
+- **Long DNS questions:** Use multiple labels under `ask.ch.at`; the 63-byte
+  limit applies to each label, not the entire prompt. The total-name limit still applies.
+- **Unicode DNS:** Use `_b32.<unpadded-base32-utf8>.ask.ch.at`, splitting payload
+  labels at 63 characters. See the [encoding recipe and limits](docs/clients.md#unicode-and-exact-case-dns-prompts-29).
+
 ## Design
 
 - Three direct dependencies; the board adds no dependencies
@@ -74,7 +123,9 @@ Use HTTPS or SSH for secrets; DNS/Gopher/plain TCP are unencrypted.
 cp llm.go.example llm.go
 
 # Edit llm.go and add your API key
-# Supports OpenAI, Anthropic Claude, or local models (Ollama)
+# This template speaks OpenAI-compatible /v1/chat/completions.
+# Existing local llamafile/Ollama servers can expose that API too.
+# Native Anthropic /v1/messages and native Ollama /api/chat need other adapters.
 
 # For HTTPS, you'll need cert.pem and key.pem files:
 # Option 1: Use Let's Encrypt (recommended for production)
@@ -89,7 +140,7 @@ sudo ./chat  # Needs root for ports 80/443/53/22
 
 ### Testing
 
-Board tests need no model, credentials, or running services:
+Board and transport tests need no model, credentials, or running services:
 
 ```bash
 # Standalone board unit tests (also safe with a configured llm.go)
@@ -98,9 +149,36 @@ go test -race board.go board_docs.go board_identity.go board_test.go board_ident
 # Full-package integration tests in a clean checkout WITHOUT llm.go
 # boardtest enables a test-only LLM stub; no provider requests are made.
 go test -race -tags boardtest ./...
+go vet -tags boardtest ./...
 ```
 
 Do not use `boardtest` with an operator-provided `llm.go`: both define `LLM`.
+
+To verify the example adapter's build and cancellation behavior in a clean checkout:
+
+```sh
+# Refuses to overwrite an existing adapter; test HTTP calls are intercepted.
+(
+    set -eu
+    test ! -e llm.go
+    cp llm.go.example llm.go
+    trap 'rm -f llm.go .example-build-check' EXIT
+    go build -o .example-build-check .
+    go test -race -tags llmexample ./...
+    go vet -tags llmexample ./...
+)
+```
+
+Optional AI SDK consumer test (Node/npm only for this test, not the server):
+
+```sh
+npm install --prefix .sdk-check --ignore-scripts --no-audit --no-fund \
+    ai@7.0.140 @ai-sdk/openai-compatible@3.0.68
+CHAT_SDK_CHECK_DIR="$PWD/.sdk-check" go test -race -tags boardtest -run TestOpenAICompatibleSDK -v
+```
+
+This checks real SDK parsing/termination with a fake local model, making no paid
+requests. It does not test OpenCode's unsupported agent/tool workflow.
 
 ```bash
 # Build the self-test tool
