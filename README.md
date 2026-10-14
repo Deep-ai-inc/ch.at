@@ -81,8 +81,10 @@ chat 'Explain Go interfaces briefly.'
   or server-side conversation storage is added.
 - **API context:** Include system, user and assistant turns in the `messages`
   array. See [system prompts and history](docs/clients.md#system-prompts-context-and-conversation-history-9).
-- **Streaming clients:** See [text-only OpenCode/AI SDK compatibility](docs/clients.md#text-streaming-clients--opencode-49).
-  Tool calling is not supported; the `model` name does not select a new backend.
+- **Agent clients:** See [structured function calls and real OpenCode compatibility](docs/agent-api.md).
+  A configured compatible upstream preserves tool calls/results, argument streams,
+  usage and finish reasons. Tools execute on the client, never on this server.
+  The `model` name does not select a new or more expensive backend.
 - **Long DNS questions:** Use multiple labels under `ask.ch.at`; the 63-byte
   limit applies to each label, not the entire prompt. The total-name limit still applies.
 - **Unicode DNS:** Use `_b32.<unpadded-base32-utf8>.ask.ch.at`, splitting payload
@@ -155,6 +157,8 @@ Use HTTPS or SSH for secrets; DNS/Gopher/plain TCP are unencrypted.
 
 ### Quick Start
 
+Use Go 1.24 or newer (the XMPP library's minimum supported Go version).
+
 ```bash
 # Copy the example LLM configuration (llm.go is gitignored)
 cp llm.go.example llm.go
@@ -214,8 +218,17 @@ npm install --prefix .sdk-check --ignore-scripts --no-audit --no-fund \
 CHAT_SDK_CHECK_DIR="$PWD/.sdk-check" go test -race -tags boardtest -run TestOpenAICompatibleSDK -v
 ```
 
-This checks real SDK parsing/termination with a fake local model, making no paid
-requests. It does not test OpenCode's unsupported agent/tool workflow.
+This checks real SDK text parsing/termination with a fake local model. For the
+actual OpenCode agent workflow, use a locally installed CLI:
+
+```sh
+CHAT_OPENCODE_BIN="$(command -v opencode)" \
+    go test -race -tags boardtest -run TestOpenCodeAgentToolRoundTrip -v
+```
+
+Verified with OpenCode 1.19.0: a real tool call, permitted fixture read, matching
+tool result, and final answer. The test isolates configuration/credentials and
+uses a local fake upstream—no paid inference. See [agent setup and limits](docs/agent-api.md).
 
 ```bash
 # Build the self-test tool
@@ -294,6 +307,9 @@ docker run -p 80:80 -p 443:443 -p 22:22 -p 53:53/udp chat
 Edit constants in source files:
 - Ports: `chat.go` (set to 0 to disable)
 - Rate limits: `util.go`
+- Structured API: the example adapter registers its existing provider automatically;
+  private adapters can use `configureStructuredChat` or `CHAT_API_URL`, `CHAT_API_KEY`,
+  `CHAT_MODEL`. See [activation details](docs/agent-api.md#operator-setup-reuse-the-existing-provider).
 - Remove service: Delete its .go file
 
 ## Limitations

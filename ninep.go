@@ -47,12 +47,12 @@ func serveProtocolConnections(listener net.Listener, handler func(net.Conn)) err
 }
 
 type ninePFid struct {
-	path      uint64 // 0 root, 1 ctl, 2 README
-	open      bool
-	mode      uint8
-	input     []byte
-	submitted bool
-	answer    *protocolAnswer
+	path          uint64 // 0 root, 1 ctl, 2 README
+	open          bool
+	mode          uint8
+	input         []byte
+	submitted     bool
+	answerVersion uint32
 }
 type ninePRead struct {
 	fid    uint32
@@ -313,8 +313,10 @@ func (s *ninePSession) handle(t *plan9.Fcall) (*plan9.Fcall, error) {
 		} else if f.path == 2 || s.current == nil {
 			r.Data = ninePSlice([]byte(ninePReadme), t.Offset, count)
 		} else {
-			if t.Offset == 0 || f.answer == nil {
-				f.answer = s.current
+			if t.Offset == 0 || f.answerVersion == 0 {
+				f.answerVersion = s.version
+			} else if f.answerVersion != s.version {
+				return nil, errors.New("answer changed; restart reading at offset zero")
 			}
 			s.pendingMu.Lock()
 			if len(s.pending) >= 16 {
@@ -325,7 +327,7 @@ func (s *ninePSession) handle(t *plan9.Fcall) (*plan9.Fcall, error) {
 			p := &ninePRead{fid: t.Fid, cancel: cancel}
 			s.pending[t.Tag] = p
 			s.pendingMu.Unlock()
-			answer := f.answer
+			answer := s.current
 			s.reads.Add(1)
 			go func() {
 				defer s.reads.Done()

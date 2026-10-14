@@ -56,7 +56,10 @@ fragmented writes. Reads wait for that answer. Clunking the writer after `echo`
 must not discard the response before a reader can retrieve it. Closing the whole
 connection cancels pending work. A new prompt may replace the previous answer
 only once that request completes. Separate connections cannot see each other's
-prompts/results. Reject auth/create/remove/wstat/unknown paths rather than exposing
+prompts/results. Open fids do not retain an unlimited history of old answers;
+if a new prompt replaces an answer mid-read, restart reading at offset zero.
+A shared local mount shares that connection's conversation; use separate mounts
+or clients when different local users need isolation. Reject auth/create/remove/wstat/unknown paths rather than exposing
 real filesystem operations or inventing a login system.
 
 ## Style and limits: reuse existing patterns
@@ -101,7 +104,27 @@ submit matching tool result -> final answer. SDK text completion alone is not th
 3. Race tests/vet and bounded-work checks, with local fake models rather than paid
    inference. Preserve existing HTTP/SSH/DNS/board behavior.
 4. Actual OpenCode tool/result/final-answer cycle and structured API stream tests.
+   See [agent API configuration and verification](agent-api.md).
 5. README/homepage instructions show native ports and anonymous usage. Public
    reachability remains a separate deployment check, not an inferred success.
 6. Before a later authorized merge, check/back up the RAM-only agent feed. A public
    export is not full-state persistence and cannot recover an earlier lost feed.
+
+## Current verification
+
+The branch passes real userspace 9p client attach/write/read tests and native
+XMPP client ANONYMOUS/binding/chat tests over plain TCP. Separate tests show that
+plain login still works when STARTTLS is offered, and that a client can optionally
+negotiate STARTTLS with a verified test certificate. The documented Go clients
+are built and executed against local test servers, without accounts or bridges.
+
+Tests cover cross-connection isolation, message relay/spoof rejection, ping and
+discovery, fragmented/duplicate writes, offsets, flush, fid/frame/stanza bounds,
+busy responses and disconnect cancellation. The full Go suite runs with the race
+detector. A real OpenCode 1.19.0 CLI completed a local tool-call/read/tool-result/
+final-answer cycle in two upstream calls, using no paid model or user credentials.
+
+This is not a claim of live deployment. The pre-deployment external probes of
+`ch.at:5222` and `ch.at:564` timed out; that alone cannot distinguish missing
+listeners from firewall filtering. Public reachability and the deployed
+structured-provider configuration remain explicit activation checks.

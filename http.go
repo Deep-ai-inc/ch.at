@@ -366,6 +366,10 @@ type Choice struct {
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if backend := configuredStructuredChat(); backend != nil {
+		handleStructuredChat(w, r, backend)
+		return
+	}
 	handleChatCompletionsWithLLM(w, r, LLM)
 }
 
@@ -406,7 +410,7 @@ func handleChatCompletionsWithLLM(w http.ResponseWriter, r *http.Request, llm ll
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
-			"message": "Tool calling is not supported; use text-only chat without tools.", "type": "invalid_request_error", "code": "unsupported_tools",
+			"message": "Tool calling requires a configured structured backend (CHAT_API_URL, CHAT_API_KEY, CHAT_MODEL or the adapter configuration hook).", "type": "invalid_request_error", "code": "unsupported_tools",
 		}})
 		return
 	}

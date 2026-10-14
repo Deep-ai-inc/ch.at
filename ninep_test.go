@@ -226,6 +226,42 @@ func TestNinePFlushAndDisconnect(t *testing.T) {
 	}
 }
 
+func TestNinePNewPromptInvalidatesOldReadOffsets(t *testing.T) {
+	fs, _ := ninePTestFS(t, func(ctx context.Context, input interface{}, ch chan<- string) (string, error) {
+		defer close(ch)
+		ch <- input.(string)
+		return "", nil
+	})
+	write := func(prompt string) {
+		fid, err := fs.Open("ctl", plan9.OWRITE)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fid.Write([]byte(prompt + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		fid.Close()
+	}
+	write("first")
+	reader, err := fs.Open("ctl", plan9.OREAD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	buf := make([]byte, 2)
+	if _, err := reader.ReadAt(buf, 0); err != nil || string(buf) != "fi" {
+		t.Fatal(string(buf), err)
+	}
+	write("second")
+	if _, err := reader.ReadAt(buf, 2); err == nil {
+		t.Fatal("mixed response generations")
+	}
+	buf = make([]byte, 6)
+	if _, err := reader.ReadAt(buf, 0); err != nil || string(buf) != "second" {
+		t.Fatal(string(buf), err)
+	}
+}
+
 func TestNinePBoundsAndMalformedFrames(t *testing.T) {
 	var calls atomic.Int32
 	conn := ninePTestConn(t, fixedChatLLM(&calls, "unused"))
@@ -256,6 +292,32 @@ func TestNinePBoundsAndMalformedFrames(t *testing.T) {
 	}
 	if _, err := readNinePCall(strings.NewReader("\x03\x00\x00\x00"), 8192); err == nil {
 		t.Fatal("short frame accepted")
+	}
+}
+
+func TestNinePPendingReadsAreBounded(t *testing.T) {
+	finished := make(chan struct{})
+	conn := ninePTestConn(t, func(ctx context.Context, _ interface{}, ch chan<- string) (string, error) {
+		defer close(ch)
+		defer close(finished)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	p9OpenCtl(t, conn)
+	p9Exchange(t, conn, &plan9.Fcall{Type: plan9.Twrite, Tag: 4, Fid: 2, Data: []byte("wait\n")})
+	for tag := uint16(10); tag < 26; tag++ {
+		if err := plan9.WriteFcall(conn, &plan9.Fcall{Type: plan9.Tread, Tag: tag, Fid: 2, Count: 100}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := p9Exchange(t, conn, &plan9.Fcall{Type: plan9.Tread, Tag: 100, Fid: 2, Count: 100}); r.Type != plan9.Rerror {
+		t.Fatal("pending read limit missing", r)
+	}
+	conn.Close()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("bounded session did not cancel its model")
 	}
 }
 

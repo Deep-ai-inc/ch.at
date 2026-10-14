@@ -87,39 +87,23 @@ are not interchangeable with OpenAI's `/v1/chat/completions` protocol.
 
 ## Text streaming clients / OpenCode (#49)
 
-For `/v1/chat/completions`, set `stream: true`. A stream has one stable ID,
-creation timestamp and model value; an initial assistant-role delta; content
-deltas with `finish_reason: null`; a terminal empty delta with
-`finish_reason: "stop"`; then `data: [DONE]`. Non-streaming replies also include
-`finish_reason`. Provider failures produce an SSE error object rather than a
-successful stop. The text-only LLM adapter does not expose token usage or the
-upstream's detailed stop/length reason; `stop` describes completion of this
-adapter's output, not a promise that the upstream never truncated a reply.
+For `/v1/chat/completions`, set `stream: true`. A configured structured backend
+preserves tool calls, argument deltas, tool-result messages, usage and the real
+upstream finish reason (`tool_calls`, `stop`, `length`, etc.), followed by
+`data: [DONE]`. See the [agent API guide](agent-api.md) for operator activation,
+OpenCode configuration and the verified real CLI tool/result round trip.
 
 The issue's configuration selected `opencode/glm-4.7-free`, not its custom `chat`
-provider. The selected model must match that provider, for example:
+provider. Select `chat/default` and configure `@ai-sdk/openai-compatible` with
+`https://ch.at/v1`; enable tool-call capability for that client model. The guide
+includes a complete configuration and client-side permission recommendations.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "model": "chat/default",
-  "provider": {
-    "chat": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "chat",
-      "options": { "baseURL": "https://ch.at/v1" },
-      "models": { "default": { "name": "ch.at (configured backend)" } }
-    }
-  }
-}
-```
-
-**This is text-chat compatibility, not full OpenCode agent support.** Tool calling
-is not implemented. Nonempty `tools` or a requested tool-selection mode returns
-a clear HTTP 400 rather than being silently ignored. An OpenCode mode that always
-sends tools still cannot use this service as an agent; use a text-only client.
-The optional AI SDK integration test verifies streaming and non-streaming
-termination against a fake local model, not an entire OpenCode workflow.
+The old text-only adapter remains compatible when no structured backend is
+configured. It emits an initial assistant role, text deltas, terminal
+`finish_reason: "stop"` and `[DONE]`, but cannot expose upstream usage or distinguish
+its true stop/length reason. Tools in this fallback receive a clear configuration
+error rather than being silently ignored. Do not claim agent support is live merely
+because code was merged: the deployed provider must be configured and support tools.
 
 The root endpoint also supports `Accept: text/event-stream`, using plain-text
 SSE data rather than OpenAI JSON. It invokes the model only once; multiline

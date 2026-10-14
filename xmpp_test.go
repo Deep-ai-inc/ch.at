@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/xml"
 	"net"
 	"net/http"
@@ -27,6 +28,10 @@ type xmppTestClient struct {
 }
 
 func newXMPPTestClient(t *testing.T, llm llmFunc, tlsConfig *tls.Config) *xmppTestClient {
+	return newXMPPTestClientTLS(t, llm, tlsConfig, nil)
+}
+
+func newXMPPTestClientTLS(t *testing.T, llm llmFunc, tlsConfig, clientTLS *tls.Config) *xmppTestClient {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -62,12 +67,17 @@ func newXMPPTestClient(t *testing.T, llm llmFunc, tlsConfig *tls.Config) *xmppTe
 	defer cancel()
 	anon := xmpp.SASL("", "", sasl.Anonymous)
 	anon.Necessary = 0
-	session, err := xmpp.NewClientSession(ctx, jid.MustParse(xmppDomain), conn, anon, xmpp.BindResource())
+	features := []xmpp.StreamFeature{anon, xmpp.BindResource()}
+	if clientTLS != nil {
+		anon.Necessary = xmpp.Secure
+		features = []xmpp.StreamFeature{xmpp.StartTLS(clientTLS), anon, xmpp.BindResource()}
+	}
+	session, err := xmpp.NewClientSession(ctx, jid.MustParse(xmppDomain), conn, features...)
 	if err != nil {
 		t.Fatal("anonymous plaintext negotiation", err)
 	}
-	if session.State()&xmpp.Secure != 0 {
-		t.Fatal("test must demonstrate plaintext works")
+	if (session.State()&xmpp.Secure != 0) != (clientTLS != nil) {
+		t.Fatal("wrong encryption negotiation")
 	}
 	conn.SetDeadline(time.Time{})
 	client := &xmppTestClient{session: session, conn: conn, messages: make(chan xmppMessage, 16), done: clientDone}
@@ -223,6 +233,21 @@ func TestXMPPPlainLoginWithOptionalTLSAvailable(t *testing.T) {
 	client := newXMPPTestClient(t, fixedChatLLM(&calls, "plain still works"), config)
 	reply := client.send(t, xmppMessage{Message: stanza.Message{ID: "plain", Type: stanza.ChatMessage, To: xmppBot}, Body: "hello"})
 	if reply.Body != "plain still works" || calls.Load() != 1 {
+		t.Fatal(reply, calls.Load())
+	}
+}
+
+func TestXMPPOptionalSTARTTLSIsUsable(t *testing.T) {
+	certServer := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer certServer.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(certServer.Certificate())
+	serverTLS := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: certServer.TLS.Certificates}
+	clientTLS := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, ServerName: certServer.Certificate().DNSNames[0]}
+	var calls atomic.Int32
+	client := newXMPPTestClientTLS(t, fixedChatLLM(&calls, "optional TLS works"), serverTLS, clientTLS)
+	reply := client.send(t, xmppMessage{Message: stanza.Message{ID: "secure", Type: stanza.ChatMessage, To: xmppBot}, Body: "hello"})
+	if reply.Body != "optional TLS works" || calls.Load() != 1 {
 		t.Fatal(reply, calls.Load())
 	}
 }

@@ -61,6 +61,10 @@ func run(addr, domain string, startTLS bool, prompt string, out io.Writer) error
 	anon.Necessary = 0
 	features := []xmpp.StreamFeature{anon, xmpp.BindResource()}
 	if startTLS {
+		// Only an explicit -starttls request makes encryption mandatory for
+		// this client. Default anonymous connections remain ordinary TCP.
+		anon.Necessary = xmpp.Secure
+		features[0] = anon
 		features = append([]xmpp.StreamFeature{xmpp.StartTLS(&tls.Config{ServerName: domain, MinVersion: tls.VersionTLS12})}, features...)
 	}
 	session, err := xmpp.NewClientSession(ctx, server, conn, features...)
