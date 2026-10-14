@@ -5,9 +5,14 @@ existing records. Only `ask.ch.at` is delegated to `ch.at.` (whose A record is
 maintained in the parent zone). This is an NS delegation, not a wildcard A or
 CNAME record. No new hosted zone or domain nameserver change is needed.
 
-Deploy the DNS implementation before creating the delegation. The child server
-must answer authoritative NS and SOA queries for `ask.ch.at`, NODATA queries for
-other types, and TXT queries beneath the child on both UDP and TCP port 53.
+Deploy the DNS implementation before creating the delegation. Before merging to
+`master`, export the live public feed as described in [board-feed.md](board-feed.md):
+the existing CI/CD workflow restarts the in-memory board on every deployment. The child server
+must answer authoritative NS and SOA queries for `ask.ch.at` and NODATA queries
+for other types. Delegated TXT queries receive an immediate UDP TC response;
+recursive resolvers retry over TCP for model generation. This avoids short UDP
+retry windows (observed with Google Public DNS). Both UDP and TCP port 53 must
+remain reachable.
 Do not add a DS record: the child is not DNSSEC-signed.
 
 Apply only to the existing `ch.at` zone:
