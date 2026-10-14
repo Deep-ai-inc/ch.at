@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base32"
 	"fmt"
 	"net"
 	"strings"
@@ -59,6 +60,44 @@ func dnsPrompt(name string) (prompt string, delegated bool) {
 	return strings.Join(strings.Fields(strings.ReplaceAll(name, "-", " ")), " "), delegated
 }
 
+// _b32 reserves an explicit namespace for unpadded base32-encoded UTF-8.
+// Base32 survives resolver case randomization; base64 does not. Split payloads
+// across labels (each <=63 bytes) and concatenate before decoding. Nothing is
+// guessed or decoded for ordinary prompts, and DNS wire-size limits still apply.
+func decodeDNSPrompt(name string) (string, bool, error) {
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	if !strings.HasSuffix(name, ".ask.ch.at") {
+		return "", false, nil
+	}
+	body := strings.TrimSuffix(name, ".ask.ch.at")
+	if body != "_b32" && !strings.HasPrefix(body, "_b32.") {
+		return "", false, nil
+	}
+	if body == "_b32" || len(name) > 253 {
+		return "", true, fmt.Errorf("invalid encoded DNS prompt")
+	}
+	encoded := strings.TrimPrefix(body, "_b32.")
+	for _, label := range strings.Split(encoded, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return "", true, fmt.Errorf("invalid base32 label")
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z') && !(c >= '2' && c <= '7') {
+				return "", true, fmt.Errorf("invalid base32 character")
+			}
+		}
+	}
+	data, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.ReplaceAll(encoded, ".", "")))
+	if err != nil || !utf8.Valid(data) || strings.TrimSpace(string(data)) == "" {
+		return "", true, fmt.Errorf("invalid UTF-8 DNS prompt")
+	}
+	// Reject noncanonical padding bits instead of accepting multiple encodings.
+	if strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(data)) != strings.ReplaceAll(encoded, ".", "") {
+		return "", true, fmt.Errorf("noncanonical base32")
+	}
+	return string(data), true, nil
+}
+
 func askSOA() dns.RR {
 	return &dns.SOA{
 		Hdr: dns.RR_Header{Name: askDNSZone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
@@ -86,9 +125,7 @@ func handleDNS(w dns.ResponseWriter, r *dns.Msg) {
 	handleChatDNS(w, r, LLM)
 }
 
-type dnsLLM func(context.Context, interface{}, chan<- string) (string, error)
-
-func handleChatDNS(w dns.ResponseWriter, r *dns.Msg, llm dnsLLM) {
+func handleChatDNS(w dns.ResponseWriter, r *dns.Msg, llm llmFunc) {
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Authoritative = true
@@ -134,6 +171,13 @@ func handleChatDNS(w dns.ResponseWriter, r *dns.Msg, llm dnsLLM) {
 	if q.Qtype != dns.TypeTXT {
 		return
 	}
+	if encoded, ok, err := decodeDNSPrompt(q.Name); ok {
+		if err != nil {
+			m.Rcode = dns.RcodeFormatError
+			return
+		}
+		prompt = encoded
+	}
 	// Model generation is slow relative to recursive resolvers' UDP retry
 	// windows. Immediately request TCP for delegated TXT queries, before any
 	// model call or rate-limit charge. TCP also avoids duplicate generation
@@ -160,7 +204,7 @@ func handleChatDNS(w dns.ResponseWriter, r *dns.Msg, llm dnsLLM) {
 	}}
 }
 
-func generateDNSAnswer(ctx context.Context, prompt string, llm dnsLLM) (string, error) {
+func generateDNSAnswer(ctx context.Context, prompt string, llm llmFunc) (string, error) {
 	ch := make(chan string)
 	result := make(chan error, 1)
 	go func() {

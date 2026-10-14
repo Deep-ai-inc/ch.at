@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 
@@ -92,9 +93,11 @@ func handleConnection(netConn net.Conn, config *ssh.ServerConfig) {
 
 func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, peer string) {
 	defer channel.Close()
+	terminal := false
 	for req := range requests {
 		switch req.Type {
 		case "pty-req":
+			terminal = true
 			req.Reply(true, nil)
 		case "exec":
 			var command struct{ Command string }
@@ -118,7 +121,7 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, peer strin
 		case "shell":
 			req.Reply(true, nil)
 			go ssh.DiscardRequests(requests)
-			runSSHChat(channel, peer)
+			runSSHChat(channel, peer, terminal)
 			return
 		default:
 			req.Reply(false, nil)
@@ -126,7 +129,11 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request, peer strin
 	}
 }
 
-func runSSHChat(channel ssh.Channel, peer string) {
+func runSSHChat(channel ssh.Channel, peer string, terminal bool) {
+	runSSHChatWithLLM(channel, peer, terminal, LLM)
+}
+
+func runSSHChatWithLLM(channel ssh.Channel, peer string, terminal bool, llm llmFunc) {
 
 	// Session-scoped context — cancelled when session ends, which
 	// ensures any in-flight LLM goroutines are cleaned up.
@@ -171,18 +178,16 @@ func runSSHChat(channel ssh.Channel, peer string) {
 					}
 
 					// Get LLM response with streaming
-					ch := make(chan string)
-					go func() {
-						if _, err := LLM(ctx, query, ch); err != nil {
-							fmt.Fprintf(channel, "Error: %s\r\n", err.Error())
-						}
-					}()
-
-					// Stream response as it arrives
+					ch, result := streamLLM(ctx, query, llm)
+					output := sshOutputWriter{w: channel, terminal: terminal}
 					for chunk := range ch {
-						fmt.Fprint(channel, chunk)
+						if err := output.WriteString(chunk); err != nil {
+							return
+						}
 					}
-
+					if err := <-result; err != nil {
+						fmt.Fprintf(channel, "\r\nError: model request failed\r\n")
+					}
 					fmt.Fprintf(channel, "\r\n> ")
 				}
 			} else if ch == '\b' || ch == 127 { // Backspace or Delete
@@ -206,6 +211,35 @@ func runSSHChat(channel ssh.Channel, peer string) {
 			}
 		}
 	}
+}
+
+// A PTY puts the client terminal in raw mode, so bare LF does not return the
+// cursor to column zero. Track CR across model chunks to avoid turning CRLF
+// into CRCRLF. Non-PTY output is passed through unchanged.
+type sshOutputWriter struct {
+	w        io.Writer
+	terminal bool
+	lastCR   bool
+}
+
+func (w *sshOutputWriter) WriteString(s string) error {
+	out := s
+	if w.terminal {
+		var b strings.Builder
+		for i := 0; i < len(s); i++ {
+			if s[i] == '\n' && !w.lastCR {
+				b.WriteByte('\r')
+			}
+			b.WriteByte(s[i])
+			w.lastCR = s[i] == '\r'
+		}
+		out = b.String()
+	}
+	n, err := io.WriteString(w.w, out)
+	if err == nil && n != len(out) {
+		err = io.ErrShortWrite
+	}
+	return err
 }
 
 // getOrCreateHostKey generates a new ephemeral host key

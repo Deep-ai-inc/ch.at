@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,13 +48,22 @@ const htmlHeader = `<!DOCTYPE html>
     <h1>ch.at</h1>
     <p>Universal Basic Intelligence</p>
     <p><small><i>pronounced "ch-dot-at"</i></small></p>
+    <!-- Keep Enter in the new-message input bound to Send, not an earlier edit button. -->
+    <button form="chat-form" type="submit" hidden>Send</button>
     <div class="chat">`
 
 const htmlFooterTemplate = `</div>
-    <form method="POST" action="/">
+    <form id="chat-form" method="POST" action="/">
         <input type="text" name="q" placeholder="Type your message..." autofocus>
-        <input type="submit" value="Send">
-        <textarea name="h" style="display:none">%s</textarea>
+        <button type="submit">Send</button>
+        <details>
+            <summary>Edit conversation history</summary>
+            <p>Edit the Q: and A: transcript below. Send continues from your edits.
+            To regenerate an earlier answer, remove the later exchanges, edit the
+            final Q: entry, and choose Regenerate last answer. Its old A: is ignored.</p>
+            <textarea name="h" rows="12" cols="60" style="max-width:100%%" aria-label="Conversation history">%s</textarea>
+            <button type="submit" name="action" value="regenerate">Regenerate last answer</button>
+        </details>
     </form>
     <p><a href="/">New Chat</a> · <a href="/agents">Agent board &amp; microblog</a> · <a href="/board/feed?topic=news&amp;format=text">Agent news</a></p>
     <p><small>
@@ -97,6 +109,13 @@ func StartHTTPSServer(port int, certFile, keyFile string) error {
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
+	handleRootWithLLM(w, r, LLM)
+}
+
+func handleRootWithLLM(w http.ResponseWriter, r *http.Request, llm llmFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Link", "</agents>; rel=\"help\"")
 	if !rateLimitAllow(r.RemoteAddr) {
@@ -118,10 +137,35 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 		// Limit history size to ensure compatibility
 		if len(history) > 65536 {
+			if r.FormValue("edit_from") != "" {
+				http.Error(w, "History exceeds 64KB; shorten it before editing a turn", http.StatusBadRequest)
+				return
+			}
 			history = history[len(history)-65536:]
 		}
 
-		if query == "" {
+		if editFrom := r.FormValue("edit_from"); editFrom != "" {
+			n, err := strconv.Atoi(editFrom)
+			turns := chatHistoryTurns(history)
+			if err != nil || n < 0 || n >= len(turns) {
+				http.Error(w, "Invalid history turn", http.StatusBadRequest)
+				return
+			}
+			query = strings.TrimSpace(r.FormValue(fmt.Sprintf("edit_q_%d", n)))
+			if query == "" {
+				http.Error(w, "Edited question is empty", http.StatusBadRequest)
+				return
+			}
+			// Keep only earlier exchanges; discard this answer and later turns.
+			history = history[:turns[n].start]
+		} else if r.FormValue("action") == "regenerate" {
+			var err error
+			history, query, err = regenerateHistory(history)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else if query == "" {
 			body, err := io.ReadAll(io.LimitReader(r.Body, 65536)) // Limit body size
 			if err != nil {
 				http.Error(w, "Failed to read request body", http.StatusBadRequest)
@@ -139,9 +183,10 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	accept := r.Header.Get("Accept")
 	userAgent := strings.ToLower(r.Header.Get("User-Agent"))
-	wantsJSON := strings.Contains(accept, "application/json")
-	wantsHTML := isBrowserUA(userAgent) || strings.Contains(accept, "text/html")
-	wantsStream := strings.Contains(accept, "text/event-stream")
+	raw := r.FormValue("raw") == "1"
+	wantsJSON := !raw && strings.Contains(accept, "application/json")
+	wantsStream := !raw && strings.Contains(accept, "text/event-stream")
+	wantsHTML := !raw && !wantsJSON && !wantsStream && (isBrowserUA(userAgent) || strings.Contains(accept, "text/html"))
 
 	if query != "" {
 		prompt = query
@@ -149,7 +194,13 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 			prompt = history + "Q: " + query
 		}
 
-		if wantsHTML && r.Header.Get("Accept") != "application/json" {
+		// Select SSE before any non-streaming call: generate just one answer.
+		if wantsStream {
+			streamRoot(w, r, prompt, llm)
+			return
+		}
+
+		if wantsHTML {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Transfer-Encoding", "chunked")
 			w.Header().Set("X-Accel-Buffering", "no")
@@ -173,34 +224,28 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if history != "" {
-				histParts := strings.Split("\n"+history, "\nQ: ")
-				for _, part := range histParts[1:] {
-					if i := strings.Index(part, "\nA: "); i >= 0 {
-						question := part[:i]
-						answer := part[i+4:]
-						answer = strings.TrimRight(answer, "\n")
-						fmt.Fprintf(w, "<div class=\"q\">%s</div>\n", html.EscapeString(question))
-						fmt.Fprintf(w, "<div class=\"a\">%s</div>\n", answer)
-					}
-				}
-			}
-			fmt.Fprintf(w, "<div class=\"q\">%s</div>\n<div class=\"a\">", html.EscapeString(query))
+			writeChatHistory(w, history)
+			writeChatQuestion(w, len(chatHistoryTurns(history)), query)
+			fmt.Fprint(w, "<div class=\"a\">")
 			flusher.Flush()
 
 			ch := make(chan string, 10)
 			go func() {
 				htmlPrompt := htmlPromptPrefix + prompt
-				LLM(r.Context(), htmlPrompt, ch)
+				llm(r.Context(), htmlPrompt, ch)
 			}()
 
 			var response strings.Builder
+			htmlOut := chatHTMLWriter{w: w}
 			for chunk := range ch {
-				if _, err := fmt.Fprint(w, chunk); err != nil {
+				if err := htmlOut.WriteString(chunk); err != nil {
 					return
 				}
 				response.WriteString(chunk)
 				flusher.Flush()
+			}
+			if err := htmlOut.Flush(); err != nil {
+				return
 			}
 			fmt.Fprint(w, "</div>\n")
 
@@ -211,18 +256,20 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 
 		// More strict curl detection: only exact match or curl/ prefix
 		isCurl := (userAgent == "curl" || strings.HasPrefix(userAgent, "curl/")) && !wantsHTML && !wantsJSON && !wantsStream
-		if isCurl {
+		if isCurl || raw {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Transfer-Encoding", "chunked")
 			w.Header().Set("X-Accel-Buffering", "no")
 			flusher := w.(http.Flusher)
 
-			fmt.Fprintf(w, "Q: %s\nA: ", query)
+			if !raw {
+				fmt.Fprintf(w, "Q: %s\nA: ", query)
+			}
 			flusher.Flush()
 
 			ch := make(chan string, 10)
 			go func() {
-				LLM(r.Context(), prompt, ch)
+				llm(r.Context(), prompt, ch)
 			}()
 
 			for chunk := range ch {
@@ -231,7 +278,9 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 				}
 				flusher.Flush()
 			}
-			fmt.Fprint(w, "\n")
+			if !raw {
+				fmt.Fprint(w, "\n")
+			}
 			return
 		}
 
@@ -239,7 +288,7 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		if wantsHTML {
 			promptToUse = htmlPromptPrefix + prompt
 		}
-		response, err := LLM(r.Context(), promptToUse, nil)
+		response, err := llm(r.Context(), promptToUse, nil)
 		if err != nil {
 			content = err.Error()
 			errJSON, _ := json.Marshal(map[string]string{"error": err.Error()})
@@ -273,48 +322,13 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		content = history
 	}
 
-	if wantsStream && query != "" {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
-			return
-		}
-
-		ch := make(chan string, 10)
-		go func() {
-			LLM(r.Context(), prompt, ch)
-		}()
-
-		for chunk := range ch {
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", chunk); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		return
-	}
-
 	if wantsJSON && jsonResponse != "" {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		fmt.Fprint(w, jsonResponse)
 	} else if wantsHTML && query == "" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, htmlHeader)
-		parts := strings.Split("\n"+content, "\nQ: ")
-		for _, part := range parts[1:] {
-			if i := strings.Index(part, "\nA: "); i >= 0 {
-				question := part[:i]
-				answer := part[i+4:]
-				answer = strings.TrimRight(answer, "\n")
-				fmt.Fprintf(w, "<div class=\"q\">%s</div>\n", html.EscapeString(question))
-				fmt.Fprintf(w, "<div class=\"a\">%s</div>\n", answer)
-			}
-		}
+		writeChatHistory(w, content)
 
 		fmt.Fprintf(w, htmlFooterTemplate, html.EscapeString(content))
 	} else {
@@ -324,9 +338,11 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream,omitempty"`
+	Model      string          `json:"model"`
+	Messages   []Message       `json:"messages"`
+	Stream     bool            `json:"stream,omitempty"`
+	Tools      json.RawMessage `json:"tools,omitempty"`
+	ToolChoice json.RawMessage `json:"tool_choice,omitempty"`
 }
 
 type Message struct {
@@ -343,11 +359,19 @@ type ChatResponse struct {
 }
 
 type Choice struct {
-	Index   int     `json:"index"`
-	Message Message `json:"message"`
+	Index        int     `json:"index"`
+	Message      Message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	handleChatCompletionsWithLLM(w, r, LLM)
+}
+
+func handleChatCompletionsWithLLM(w http.ResponseWriter, r *http.Request, llm llmFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -375,6 +399,23 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This text adapter cannot execute or return tool calls. Fail explicitly
+	// rather than silently ignoring them and leaving agent clients retrying.
+	if nonemptyTools(req.Tools) || (len(req.ToolChoice) != 0 && strings.TrimSpace(string(req.ToolChoice)) != "null" && strings.TrimSpace(string(req.ToolChoice)) != `"none"`) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"message": "Tool calling is not supported; use text-only chat without tools.", "type": "invalid_request_error", "code": "unsupported_tools",
+		}})
+		return
+	}
+	var idBytes [16]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		http.Error(w, "Unable to create completion ID", http.StatusInternalServerError)
+		return
+	}
+	id := fmt.Sprintf("chatcmpl-%x", idBytes)
+	created := time.Now().Unix()
 	messages := make([]map[string]string, len(req.Messages))
 	for i, msg := range req.Messages {
 		messages[i] = map[string]string{
@@ -394,46 +435,51 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		ch := make(chan string, 10)
-		go LLM(r.Context(), messages, ch)
-
-		for chunk := range ch {
-			resp := map[string]interface{}{
-				"id":      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
-				"object":  "chat.completion.chunk",
-				"created": time.Now().Unix(),
-				"model":   req.Model,
-				"choices": []map[string]interface{}{{
-					"index": 0,
-					"delta": map[string]string{"content": chunk},
-				}},
+		writeChunk := func(delta map[string]string, finish any) error {
+			resp := map[string]any{
+				"id": id, "object": "chat.completion.chunk", "created": created, "model": req.Model,
+				"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
 			}
 			data, err := json.Marshal(resp)
 			if err != nil {
-				fmt.Fprintf(w, "data: Failed to marshal response\n\n")
-				return
+				return err
 			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-				return
-			}
+			_, err = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
+			return err
 		}
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if err := writeChunk(map[string]string{"role": "assistant"}, nil); err != nil {
+			return
+		}
+		ch, result := streamLLM(r.Context(), messages, llm)
+		for chunk := range ch {
+			if err := writeChunk(map[string]string{"content": chunk}, nil); err != nil {
+				return
+			}
+		}
+		if err := <-result; err != nil {
+			fmt.Fprint(w, "data: {\"error\":{\"message\":\"Model request failed\",\"type\":\"upstream_error\"}}\n\n")
+		} else if err := writeChunk(map[string]string{}, "stop"); err != nil {
+			return
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
 
 	} else {
-		response, err := LLM(r.Context(), messages, nil)
+		response, err := llm(r.Context(), messages, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		chatResp := ChatResponse{
-			ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
+			ID:      id,
 			Object:  "chat.completion",
-			Created: time.Now().Unix(),
+			Created: created,
 			Model:   req.Model,
 			Choices: []Choice{{
-				Index: 0,
+				Index:        0,
+				FinishReason: "stop",
 				Message: Message{
 					Role:    "assistant",
 					Content: response,

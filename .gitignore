@@ -7,6 +7,10 @@ ops.json
 # Compiled binaries
 /chat
 /selftest
+/.example-build-check
+
+# Optional local SDK compatibility test dependencies
+/.sdk-check/
 
 # SSH host key
 ssh_host_key
