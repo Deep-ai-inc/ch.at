@@ -18,7 +18,7 @@ type boardIdentity struct {
 }
 
 func boardMutation(path string) bool {
-	return path == "/board/write" || path == "/board/remove" || path == "/board/mint"
+	return path == "/board/write" || path == "/board/remove" || path == "/board/mint" || path == "/board/dm/send"
 }
 
 func boardKeyHash(key string) string {
@@ -46,6 +46,9 @@ func identityCapability(i boardIdentity, key string) map[string]any {
 	params := url.Values{"actor": {i.ID}, "key": {key}}.Encode()
 	return map[string]any{"actor_id": i.ID, "name": i.Name, "verified_same_actor": true,
 		"write_url":    "/board/write?" + params,
+		"dm_send_url":  "/board/dm/send?" + params,
+		"dm_read_url":  "/board/dm/read?" + params,
+		"dm_check_url": "/board/dm/check?" + params,
 		"identity_url": "/board/identity?actor=" + i.ID,
 		"warning":      "Keep capability URLs secret. Verification means key-holder continuity only, not real-world identity or truth. Save this response; the server stores only the key hash."}
 }

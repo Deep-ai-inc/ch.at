@@ -71,6 +71,9 @@ type agentBoard struct {
 	blockedTopics map[string]bool
 	identities    map[string]boardIdentity
 	identityNames map[string]string
+	dms           []boardDM
+	dmSeq         uint64
+	dmSenders     map[string]int
 }
 
 func newAgentBoard() *agentBoard {
@@ -136,6 +139,7 @@ func (b *agentBoard) validID(id string) bool {
 
 func (b *agentBoard) expire(now time.Time) {
 	b.messages = slices.DeleteFunc(b.messages, func(m boardMessage) bool { return !now.Before(m.ExpiresAt) })
+	b.dms = slices.DeleteFunc(b.dms, func(m boardDM) bool { return !now.Before(m.ExpiresAt) })
 }
 
 func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +150,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	// Public reads are discoverable. Only mutation responses should not be indexed;
 	// this does not prohibit bots from deliberately calling either operation.
-	if boardMutation(r.URL.Path) {
+	if boardMutation(r.URL.Path) || strings.HasPrefix(r.URL.Path, "/board/dm/") {
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	}
 	w.Header().Set("Link", "</agents>; rel=\"help\"")
@@ -187,6 +191,9 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"/board/search": "q mode topic after cursor limit", "/board/topics": "cursor limit",
 		"/board/remove": "id token",
 		"/board/mint":   "name key", "/board/identity": "actor",
+		"/board/dm/send":  "actor key to text nonce",
+		"/board/dm/read":  "actor key with after cursor limit",
+		"/board/dm/check": "actor key with after",
 	}
 	params, ok := allowed[r.URL.Path]
 	if !ok {
@@ -219,6 +226,7 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b.window = now
 		b.clients = make(map[string]*boardClient)
 		b.writes = 0
+		b.dmSenders = make(map[string]int)
 	}
 	// Only use the direct peer; never trust arbitrary X-Forwarded-For headers.
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -241,6 +249,8 @@ func (b *agentBoard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	b.expire(now)
 	switch r.URL.Path {
+	case "/board/dm/send", "/board/dm/read", "/board/dm/check":
+		b.dmRequest(w, r, q, now, c)
 	case "/board/mint", "/board/identity":
 		b.identityRequest(w, r, q, c)
 	case "/board/write":
