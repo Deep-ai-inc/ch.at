@@ -29,6 +29,12 @@ dig @ch.at "what-is-2+2" TXT
 # DNS tunneling (PowerShell)
 Resolve-DnsName "what-is-2-plus-2" -Type TXT -Server ch.at
 
+# DNS through your normal recursive resolver (no direct connection required)
+dig what-is-2-plus-2.ask.ch.at TXT
+# Dots and hyphens both separate words:
+dig what.is.2.plus.2.ask.ch.at TXT
+Resolve-DnsName "what-is-2-plus-2.ask.ch.at" -Type TXT
+
 # API (OpenAI-compatible, see https://platform.openai.com/docs/api-reference/chat/create)
 curl ch.at/v1/chat/completions --data '{"messages": [{"role": "user", "content": "What is curl? Be brief."}]}'
 ```
@@ -177,7 +183,7 @@ Edit constants in source files:
 
 ## Limitations
 
-- **DNS**: Responses limited to ~500 bytes. Complex queries may time out after 4s. DNS queries automatically request concise, plain-text responses
+- **DNS**: Responses limited to ~500 bytes. Complex queries may time out after 4s. DNS queries automatically request concise, plain-text responses. `ask.ch.at` queries work through recursive resolvers; dots and hyphens become spaces and prompts are case-insensitive. Each DNS label is limited to 63 bytes and the whole wire-format name to 255 bytes. Successful answers are cached for 60 seconds, so repeated questions may return the same answer. Queries are visible to DNS operators: do not include secrets. Shared resolvers also share the server's per-source-IP rate limit. Large UDP replies use TCP fallback; port 53 must allow both UDP and TCP. See [delegation operations](ops/ask-dns.md).
 - **History**: Limited to 64KB to ensure compatibility across systems
 - **Rate limiting**: Basic IP-based limiting to prevent abuse
 - **No encryption**: SSH is encrypted, but HTTP/DNS are not
