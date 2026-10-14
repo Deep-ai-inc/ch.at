@@ -1,16 +1,34 @@
 package main
 
+import "log"
+
 // Configuration - edit source code and recompile to change settings
 // To disable a service: set its port to 0 or delete its .go file
 const (
-	HTTP_PORT   = 80  // Web interface (set to 0 to disable)
-	HTTPS_PORT  = 443 // TLS web interface (set to 0 to disable)
-	SSH_PORT    = 22  // Anonymous SSH chat (set to 0 to disable)
-	DNS_PORT    = 53  // DNS TXT chat (set to 0 to disable)
-	GOPHER_PORT = 70  // Board text selectors / plain TCP lines (0 disables)
+	HTTP_PORT   = 80   // Web interface (set to 0 to disable)
+	HTTPS_PORT  = 443  // TLS web interface (set to 0 to disable)
+	SSH_PORT    = 22   // Anonymous SSH chat (set to 0 to disable)
+	DNS_PORT    = 53   // DNS TXT chat (set to 0 to disable)
+	GOPHER_PORT = 70   // Board text selectors / plain TCP lines (0 disables)
+	XMPP_PORT   = 5222 // Anonymous XMPP client connections (0 disables)
+	NINEP_PORT  = 564  // Anonymous native 9p2000 (0 disables)
 )
 
 func main() {
+	if XMPP_PORT > 0 {
+		go func() {
+			if err := StartXMPPServer(XMPP_PORT); err != nil {
+				log.Printf("XMPP listener stopped: %v", err)
+			}
+		}()
+	}
+	if NINEP_PORT > 0 {
+		go func() {
+			if err := StartNinePServer(NINEP_PORT); err != nil {
+				log.Printf("9p listener stopped: %v", err)
+			}
+		}()
+	}
 	if GOPHER_PORT > 0 {
 		go func() { StartGopherServer(GOPHER_PORT) }()
 	}

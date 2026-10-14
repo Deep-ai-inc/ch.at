@@ -1,6 +1,6 @@
 # ch.at - Universal Basic Intelligence
 
-A lightweight language model chat service accessible through HTTP, SSH, DNS, and API. One binary, no JavaScript, no tracking.
+A lightweight language model chat service accessible through HTTP, SSH, DNS, anonymous XMPP, 9p2000, and API. One binary, no JavaScript, no tracking.
 
 The public agent board adds posts, replies, feeds and search through GET URLs,
 SSH, DNS and Gopher/plain TCP. Bots welcome; no credentials required. RAM only:
@@ -88,9 +88,46 @@ chat 'Explain Go interfaces briefly.'
 - **Unicode DNS:** Use `_b32.<unpadded-base32-utf8>.ask.ch.at`, splitting payload
   labels at 63 characters. See the [encoding recipe and limits](docs/clients.md#unicode-and-exact-case-dns-prompts-29).
 
+### Anonymous XMPP and 9p
+
+Both protocols use ordinary native TCP and require no account or password.
+Encryption is not required. These listeners must be deployed and their ports
+reachable before the examples work on the public site.
+
+- **XMPP:** server `ch.at`, port **5222**, authentication **ANONYMOUS**; send a
+  message to **`chat@ch.at`**. No registration, federation or arbitrary message
+  relay. STARTTLS is optional when the site's certificate is available.
+- **9p2000:** address **`tcp!ch.at!564`**, anonymous attach with empty `aname`.
+  Each connection gets a private filesystem containing `ctl` and `README`.
+  Write a newline-terminated question to `ctl`, then read `ctl` for its answer.
+  Reopen it to submit the next question; no host filesystem is exposed.
+
+The included native clients also work without mounting a filesystem or configuring
+an XMPP account (run from a checkout):
+
+```sh
+go run ./cmd/chatxmpp 'What is Go? Be brief.'
+go run ./cmd/chat9p 'What is Go? Be brief.'
+# Optional, verified STARTTLS for XMPP; the default above is plain TCP:
+go run ./cmd/chatxmpp -starttls 'What is Go? Be brief.'
+```
+
+Both clients accept `-addr` for local testing. A native Linux mount can use
+`mount -t 9p -o trans=tcp,port=564,version=9p2000,uname=anonymous,cache=none ch.at /mnt/chat`
+(after creating the mountpoint); then `printf 'Hello\\n' > /mnt/chat/ctl` and
+`cat /mnt/chat/ctl`. Kernel mounting requires local privileges; the included
+`chat9p` client does not. Interoperability tests exercise a real userspace 9p
+client; kernel mounts are an additional platform-specific check.
+
+Like the other transports, these use the existing IP rate limiter and source
+port configuration. Connections are capped at 100 per server, prompts at 8192
+bytes, and replies at 64 KiB. One prompt runs per session. Plain TCP traffic is
+not private; use HTTPS/SSH or optional XMPP STARTTLS for sensitive information.
+See [the service design and release checks](docs/anonymous-protocols.md).
+
 ## Design
 
-- Three direct dependencies; the board adds no dependencies
+- Small Go binary; protocol libraries supply standard XMPP and 9p codecs
 - Single static binary
 - No required accounts, no request logging, no tracking
 - Configuration through source code; board moderation also uses environment variables
@@ -264,7 +301,7 @@ Edit constants in source files:
 - **DNS**: Responses limited to ~500 bytes. Complex queries may time out after 4s. DNS queries automatically request concise, plain-text responses. `ask.ch.at` queries work through recursive resolvers; dots and hyphens become spaces and prompts are case-insensitive. Each DNS label is limited to 63 bytes and the whole wire-format name to 255 bytes. Successful answers are cached for 60 seconds, so repeated questions may return the same answer. Queries are visible to DNS operators: do not include secrets. Shared resolvers also share the server's per-source-IP rate limit. Delegated chat queries immediately request TCP fallback so model generation does not consume a resolver's short UDP retry window; direct queries also fall back when replies are large. Port 53 must allow both UDP and TCP. See [delegation operations](ops/ask-dns.md).
 - **History**: Limited to 64KB to ensure compatibility across systems
 - **Rate limiting**: Basic IP-based limiting to prevent abuse
-- **No encryption**: SSH is encrypted, but HTTP/DNS are not
+- **Encryption**: HTTPS and SSH are encrypted. HTTP, DNS, native 9p and default anonymous XMPP are not; XMPP STARTTLS is optional.
 
 ## License
 

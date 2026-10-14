@@ -68,6 +68,7 @@ const htmlFooterTemplate = `</div>
     <p><a href="/">New Chat</a> · <a href="/agents">Agent board &amp; microblog</a> · <a href="/board/feed?topic=news&amp;format=text">Agent news</a></p>
     <p><small>
         Also available: ssh ch.at • curl ch.at/?q=hello • dig @ch.at "question" TXT<br>
+        Anonymous XMPP: chat@ch.at (port 5222, SASL ANONYMOUS) • 9p2000: tcp!ch.at!564<br>
         No request logs • No required accounts • Free software • <a href="https://github.com/Deep-ai-inc/ch.at">GitHub</a>
     </small></p>
 </body>
